@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -102,6 +102,7 @@ class RemoteScreen extends ConsumerWidget {
       children: [
         _ActiveCard(active: active),
         _RelaySection(onUse: (h) => _use(context, ref, h)),
+        _GatewaySection(onUse: (h) => _use(context, ref, h)),
         SettingsSection(
           title: l10n.remoteTransferSettings,
           children: [
@@ -403,6 +404,45 @@ class _SshRow extends ConsumerWidget {
 
 // ── DSH Remote account ───────────────────────────────────────────────────────
 
+// ── Mobile Gateway ───────────────────────────────────────────────────────────
+
+/// Paired Mobile Gateways and the way to add one.
+///
+/// Kept out of [_RelaySection] on purpose: a gateway needs no DSH Remote
+/// account, so this section stays visible while signed out (which is exactly
+/// when someone reaches for a pairing code).
+class _GatewaySection extends ConsumerWidget {
+  const _GatewaySection({required this.onUse});
+
+  final ValueChanged<HostRef> onUse;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final hosts = ref.watch(gatewayHostsProvider).hosts;
+    return SettingsSection(
+      title: '移动网关',
+      footer: const Text('手机与电脑直连 /ws/mobile，不需要登录 DSH Remote。配对码 5 分钟内有效，过期重新生成。'),
+      children: [
+        for (final gw in hosts)
+          SettingsTile(
+            icon: hostKindIcon(HostKind.gateway),
+            tinted: false,
+            title: gw.name,
+            subtitle: gw.url,
+            onTap: () => onUse(HostRef.gateway(gw.id, name: gw.name)),
+          ),
+        SettingsTile(
+          icon: AppIcons.qrCode,
+          tinted: false,
+          title: '添加移动网关',
+          subtitle: '粘贴配对串',
+          onTap: () => GatewayPairPage.open(context),
+        ),
+      ],
+    );
+  }
+}
+
 class _RelaySection extends ConsumerWidget {
   const _RelaySection({required this.onUse});
 
@@ -486,21 +526,6 @@ class _RelaySection extends ConsumerWidget {
             title: l10n.remotePairAddComputer,
             onTap: () => Navigator.of(context).push(RemotePairingPage.route()),
           ),
-        for (final gw in ref.watch(gatewayHostsProvider).hosts)
-          SettingsTile(
-            icon: hostKindIcon(HostKind.gateway),
-            tinted: false,
-            title: gw.name,
-            subtitle: gw.url,
-            onTap: () => onUse(HostRef.gateway(gw.id, name: gw.name)),
-          ),
-        SettingsTile(
-          icon: hostKindIcon(HostKind.gateway),
-          tinted: false,
-          title: '添加移动网关',
-          subtitle: '扫码或粘贴配对串，直连 /ws/mobile',
-          onTap: () => GatewayPairPage.open(context),
-        ),
       ],
     );
   }
