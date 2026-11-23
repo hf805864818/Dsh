@@ -1,4 +1,4 @@
-// The credit under the DSH Remote card: only the project name opens
+﻿// The credit under the DSH Remote card: only the project name opens
 // github.com/liguobao/ds-harness-remote; its tap area reaches 48dp tall into
 // the empty space around the line and stays clear of every control near it.
 
@@ -184,6 +184,9 @@ void main() {
     // One button per sign-in provider; the lowest one sits nearest the credit line.
     final signIn = tester.getRect(find.byWidgetPredicate((w) => w is FilledButton).last);
     final selfHosted = tester.getRect(find.widgetWithText(TextButton, '自建服务器 · 邮箱登录'));
+    // The page grew two sections above SSH; bring it into view so it is built.
+    await tester.scrollUntilVisible(find.text('SSH 主机'), 300);
+    await tester.pump();
     final sshTitle = tester.getRect(find.text('SSH 主机'));
     final sshCard = tester.getRect(card('添加 SSH 主机'));
     final line = lineRect(tester);
@@ -225,9 +228,12 @@ void main() {
   testWidgets('the layout is that of a plain footer', (tester) async {
     await pump(tester);
     final line = lineRect(tester);
-    // Card → 8 → the line → the section margin (24) → the next section's title.
+    // Card → 8 → the line → the guide row → the section margin (24) → the next
+    // section's title.
     expect(line.top - tester.getRect(card('登录 DSH Remote')).bottom, closeTo(8, 0.01));
-    expect(tester.getRect(find.text('远程传输')).top - line.bottom, closeTo(24, 0.01));
+    final guide = tester.getRect(find.text('DSH Go 私有 VIP 连接方式，请点击查看'));
+    expect(guide.top, greaterThan(line.bottom));
+    expect(tester.getRect(find.text('远程传输')).top - guide.bottom, closeTo(24, 0.01));
   });
 
   testWidgets('signing in still opens the sign-in page, not the project', (tester) async {
@@ -310,3 +316,4 @@ void main() {
     semantics.dispose();
   });
 }
+

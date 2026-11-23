@@ -61,7 +61,13 @@ final Map<SettingsPageId, List<String Function(L10n)>> _unlisted = {
     (l) => l.performanceFollowMode,
   ],
   SettingsPageId.pets: [(l) => l.botsPetShowNow, (l) => l.botsPetSwitchDisabled, (l) => l.botsPetHiddenToday],
-  SettingsPageId.remote: [(l) => l.remoteWebConsole],
+  SettingsPageId.remote: [
+    (l) => l.remoteWebConsole,
+    // Links, not settings: the guide for the private direct connection and the
+    // entry that pairs a gateway.
+    (_) => 'DSH Go 私有 VIP 连接方式，请点击查看',
+    (_) => '添加移动网关',
+  ],
 };
 
 /// Entries whose row shows the thing itself rather than the page's name

@@ -1,4 +1,4 @@
-// The on-device runtime is optional: first run asks 本机 or 远程主机, a phone
+﻿// The on-device runtime is optional: first run asks 本机 or 远程主机, a phone
 // without the runtime opens home, every 本机 entry offers to install, the
 // runtime can be uninstalled, and the auto start setting holds.
 
@@ -337,6 +337,9 @@ void main() {
       await chooseRemote(tester);
       expect(find.byType(RemoteScreen), findsOneWidget);
 
+      // The host list sits below the new gateway sections; scroll it into view.
+      await tester.scrollUntilVisible(find.text('电脑'), 300, scrollable: find.byType(Scrollable).first);
+      await tester.pump();
       await tester.tap(find.text('电脑'));
       await _frames(tester);
       expect(find.byType(RemoteScreen), findsNothing);
@@ -749,3 +752,5 @@ void main() {
     });
   });
 }
+
+
