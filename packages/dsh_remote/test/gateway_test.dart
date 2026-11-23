@@ -1,4 +1,4 @@
-import 'dart:convert';
+﻿import 'dart:convert';
 
 import 'package:dsh_remote/gateway.dart';
 import 'package:test/test.dart';
@@ -153,6 +153,71 @@ void main() {
       expect(error.code, 'session-not-found');
       expect(error.requestType, 'history');
       expect(error.sessionId, 'session-abc');
+    });
+  });
+// Shapes captured from a live gateway (0.12.2 / DSH 0.2.2-rc.5).
+  group('live frame shapes', () {
+    test('paired carries the token at frame level', () {
+      final device = GatewayDevice.fromJson(<String, Object?>{
+        'id': '430d1a2b-7c33-4045-968c-3b18106a9fd1',
+        'name': 'raw probe',
+        'token': 'Auw2uDVGFqkzPk0iYXT-txjWasUSTWlt-jduQ6z44T4',
+      });
+      expect(device?.id, '430d1a2b-7c33-4045-968c-3b18106a9fd1');
+      expect(device?.name, 'raw probe');
+
+      // The wire frame keeps the token outside the device object, so fromJson
+      // must not be used on `frame['device']` alone.
+      final fromFrame = GatewayDevice.fromJson(<String, Object?>{
+        'id': '430d1a2b-7c33-4045-968c-3b18106a9fd1',
+        'name': 'raw probe',
+      });
+      expect(fromFrame, isNull);
+    });
+
+    test('sessions items carry the title inline', () {
+      final frame = <String, Object?>{
+        'kind': 'sessions',
+        'items': <Object?>[
+          <String, Object?>{
+            'sessionId': 'session-a47a79dd',
+            'updatedAt': 1795440540241,
+            'running': false,
+            'blank': false,
+            'cwd': r'C:\workspace',
+            'projections': <String, Object?>{
+              'asOfSeq': 2905,
+              'values': <String, Object?>{'title': '排查网关连接'},
+            },
+          },
+        ],
+      };
+      final items = asGatewayMaps(frame['items']);
+      expect(items, hasLength(1));
+      final projections = asGatewayMap(items.first['projections']);
+      final values = asGatewayMap(projections?['values']);
+      expect(values?['title'], '排查网关连接');
+    });
+
+    test('history carries events, not items', () {
+      final frame = <String, Object?>{
+        'kind': 'history',
+        'hasMore': true,
+        'nextBeforeSeq': 2890,
+        'events': <Object?>[
+          <String, Object?>{
+            'type': 'user/message',
+            'seq': 2894,
+            'time': 1795441366127,
+            'data': <String, Object?>{'content': <Object?>[]},
+          },
+        ],
+      };
+      final events = GatewayClient.historyEvents(frame);
+      expect(events, hasLength(1));
+      expect(events.first['type'], 'user/message');
+      expect(events.first['seq'], 2894);
+      expect(frame['hasMore'], isTrue);
     });
   });
 }

@@ -1,4 +1,4 @@
-/// One authenticated WebSocket to a Mobile Gateway (`/ws/mobile`).
+﻿/// One authenticated WebSocket to a Mobile Gateway (`/ws/mobile`).
 ///
 /// The gateway speaks its own JSON frame vocabulary (`type` requests,
 /// `kind` replies/pushes) and authenticates with a one-time pairing code or a
@@ -188,16 +188,21 @@ class GatewayClient {
       throw GatewayError.fromFrame(paired);
     }
 
-    final device = GatewayDevice.fromJson(paired['device']);
+    final deviceMap = asGatewayMap(paired['device']);
     final token = gatewayString(paired, 'token');
-    if (device == null || token == null) {
+    final deviceId = deviceMap == null ? null : gatewayString(deviceMap, 'id');
+    if (deviceId == null || token == null || token.isEmpty) {
       await client.close(GatewayClose.normal, 'incomplete pairing');
       throw const GatewayError(
         GatewayFailureCode.protocolMismatch,
         'The "paired" frame did not carry a device and a token.',
       );
     }
-    client._device = GatewayDevice(id: device.id, name: device.name, token: token);
+    client._device = GatewayDevice(
+      id: deviceId,
+      name: gatewayString(deviceMap!, 'name') ?? '',
+      token: token,
+    );
 
     await client._finishHandshake(timeout);
     return client;
@@ -460,6 +465,10 @@ class GatewayClient {
         },
       );
 
+  /// The `events` array of a `history` reply (raw `SessionEvent` objects).
+  static List<Map<String, Object?>> historyEvents(Map<String, Object?> historyFrame) =>
+      asGatewayMaps(historyFrame['events']);
+
   /// Closes the socket. Safe to call twice.
   Future<void> close([int code = GatewayClose.normal, String reason = 'client closing']) async {
     if (_closed) return;
@@ -471,3 +480,5 @@ class GatewayClient {
     _finish(code, reason);
   }
 }
+
+
