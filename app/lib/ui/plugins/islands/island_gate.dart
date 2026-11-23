@@ -145,6 +145,8 @@ final islandHostUrlProvider = Provider.autoDispose.family<Uri?, HostRef>((ref, h
       return islandLaunchUri('http://127.0.0.1:$port', token);
     case HostKind.relay:
       return null;
+    case HostKind.gateway:
+      return null;
   }
 });
 
