@@ -17,6 +17,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../state/gateway_hosts.dart';
 import '../../state/hosts_state.dart';
 
+/// Where the install-and-pair guide lives (docs/dsh-go-gateway.md).
+const String gatewayDocsUrl = 'https://github.com/hf805864818/Dsh/blob/main/docs/dsh-go-gateway.md';
+
 /// Where the install-level device id lives (stable across re-pairing).
 const String gatewayClientIdKey = 'remote_gateway_client_id';
 

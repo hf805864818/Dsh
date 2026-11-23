@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../l10n/l10n.dart';
 import '../../remote/relay/relay_backend.dart';
@@ -102,6 +103,19 @@ class RemoteScreen extends ConsumerWidget {
       children: [
         _ActiveCard(active: active),
         _RelaySection(onUse: (h) => _use(context, ref, h)),
+        // Right under the relay credit: the private direct-connection guide.
+        SettingsSection(
+          title: '连接方式说明',
+          children: [
+            SettingsTile(
+              icon: AppIcons.info,
+              tinted: false,
+              title: 'DSH Go 私有 VIP 连接方式，请点击查看',
+              subtitle: '电脑端插件安装 · 桌面配对码 · 隧道配置',
+              onTap: () => unawaited(launchUrl(Uri.parse(gatewayDocsUrl), mode: LaunchMode.externalApplication)),
+            ),
+          ],
+        ),
         _GatewaySection(onUse: (h) => _use(context, ref, h)),
         SettingsSection(
           title: l10n.remoteTransferSettings,
