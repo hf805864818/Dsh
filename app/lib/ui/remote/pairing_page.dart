@@ -21,6 +21,7 @@ import '../../state/account_state.dart';
 import '../../state/android_features.dart' show operatingSystemProvider;
 import '../../state/hosts_state.dart';
 import '../../state/remote_pairing_state.dart';
+import 'gateway_pair_page.dart' show looksLikeGatewayPayload, pairGatewayAndSave, parseGatewayPayload;
 import '../account/account_widgets.dart' show AccountTile;
 import '../shell/page_frame.dart';
 import '../theme/app_icons.dart';
@@ -104,6 +105,33 @@ class _RemotePairingPageState extends ConsumerState<RemotePairingPage> {
     }
   }
 
+  /// One scanner and one paste button for both channels: a Mobile Gateway
+  /// payload is self-describing, so it is claimed here; anything else goes to
+  /// the relay flow exactly as before.
+  Future<void> _codeScanned(BuildContext context, String code) async {
+    final pairing = parseGatewayPayload(code);
+    if (pairing == null) {
+      if (looksLikeGatewayPayload(code)) {
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+          const SnackBar(content: Text('配对串无效或已过期，请在电脑上重新生成。')),
+        );
+        return;
+      }
+      ref.read(remotePairingProvider.notifier).scanned(code);
+      return;
+    }
+
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    final navigator = Navigator.of(context);
+    try {
+      final config = await pairGatewayAndSave(ref, pairing);
+      navigator.pop();
+      messenger?.showSnackBar(SnackBar(content: Text('已添加移动网关：${config.name}')));
+    } on Object catch (error) {
+      messenger?.showSnackBar(SnackBar(content: Text('移动网关配对失败：$error')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final l10n = context.l10n;
@@ -117,7 +145,7 @@ class _RemotePairingPageState extends ConsumerState<RemotePairingPage> {
     final Widget body = gated
         ? const _DeepSeekGate()
         : switch (flow.step) {
-            PairingStep.scanning => _ScanStep(onCode: ref.read(remotePairingProvider.notifier).scanned),
+            PairingStep.scanning => _ScanStep(onCode: (code) => unawaited(_codeScanned(context, code))),
             PairingStep.resolving => _Busy(label: l10n.remotePairReading),
             PairingStep.confirming => _ConfirmStep(offer: flow.offer!),
             PairingStep.claiming => _Busy(label: l10n.remotePairClaiming),

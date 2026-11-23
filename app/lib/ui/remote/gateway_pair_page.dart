@@ -1,4 +1,4 @@
-﻿/// Pair a Mobile Gateway (`dsh-plugin-mobile-gateway` → `/ws/mobile`).
+/// Pair a Mobile Gateway (`dsh-plugin-mobile-gateway` → `/ws/mobile`).
 ///
 /// The computer shows a pairing payload (QR or copyable text) that is valid for
 /// five minutes. Pasting it here runs the gateway's own pairing handshake, keeps
@@ -83,38 +83,8 @@ class _GatewayPairPageState extends ConsumerState<GatewayPairPage> {
       _error = null;
     });
 
-    gw.GatewayClient? client;
     try {
-      final pairing = gw.GatewayPairing.parse(_code.text);
-      final deviceId = await gatewayClientDeviceId();
-      client = await gw.GatewayClient.pair(
-        endpoint: pairing.publicUrl,
-        pairingCode: pairing.pairingCode,
-        clientDeviceId: deviceId,
-        deviceName: 'DSH Go',
-      );
-
-      final token = client.newDeviceToken;
-      final device = client.device;
-      if (token == null || token.isEmpty || device == null) {
-        throw const gw.GatewayError('gateway/protocol-mismatch', '配对没有返回设备凭证。');
-      }
-
-      final hostId = pairing.gatewayId ?? pairing.publicUrl.host;
-      final config = GatewayHostConfig(
-        id: hostId,
-        name: pairing.gatewayName ?? pairing.publicUrl.host,
-        url: pairing.publicUrl.toString(),
-        endpoints: <String>[for (final uri in pairing.candidates) uri.toString()],
-        deviceId: device.id,
-        deviceName: device.name,
-        clientDeviceId: deviceId,
-      );
-
-      await ref.read(secretStoreProvider).write(config.secretKey, token);
-      await ref.read(gatewayHostsProvider.notifier).save(config);
-      ref.read(activeHostProvider.notifier).select(HostRef.gateway(config.id, name: config.name));
-
+      await pairGatewayAndSave(ref, gw.GatewayPairing.parse(_code.text));
       if (mounted) Navigator.of(context).pop(true);
     } on gw.GatewayPairingException catch (error) {
       setState(() => _error = '配对串无效：${error.message}');
@@ -123,9 +93,6 @@ class _GatewayPairPageState extends ConsumerState<GatewayPairPage> {
     } on Object catch (error) {
       setState(() => _error = '配对失败：$error');
     } finally {
-      if (client != null) {
-        unawaited(client.close());
-      }
       if (mounted) setState(() => _busy = false);
     }
   }
@@ -174,3 +141,56 @@ class _GatewayPairPageState extends ConsumerState<GatewayPairPage> {
   }
 }
 
+
+// ── Reusable pairing, shared with the scan/paste entry ───────────────────────
+
+/// Claims a device token for [pairing], stores it and makes the host active.
+///
+/// Shared by this page and by the relay pairing page's scan/paste entry, so one
+/// scanner serves both channels.
+Future<GatewayHostConfig> pairGatewayAndSave(WidgetRef ref, gw.GatewayPairing pairing) async {
+  final deviceId = await gatewayClientDeviceId();
+  final client = await gw.GatewayClient.pair(
+    endpoint: pairing.publicUrl,
+    pairingCode: pairing.pairingCode,
+    clientDeviceId: deviceId,
+    deviceName: 'DSH Go',
+  );
+  try {
+    final token = client.newDeviceToken;
+    final device = client.device;
+    if (token == null || token.isEmpty || device == null) {
+      throw const gw.GatewayError('gateway/protocol-mismatch', '配对没有返回设备凭证。');
+    }
+
+    final config = GatewayHostConfig(
+      id: pairing.gatewayId ?? pairing.publicUrl.host,
+      name: pairing.gatewayName ?? pairing.publicUrl.host,
+      url: pairing.publicUrl.toString(),
+      endpoints: <String>[for (final uri in pairing.candidates) uri.toString()],
+      deviceId: device.id,
+      deviceName: device.name,
+      clientDeviceId: deviceId,
+    );
+
+    await ref.read(secretStoreProvider).write(config.secretKey, token);
+    await ref.read(gatewayHostsProvider.notifier).save(config);
+    ref.read(activeHostProvider.notifier).select(HostRef.gateway(config.id, name: config.name));
+    return config;
+  } finally {
+    unawaited(client.close());
+  }
+}
+
+/// Parses [text] as a gateway payload; null when it is some other kind of code.
+gw.GatewayPairing? parseGatewayPayload(String text) {
+  try {
+    return gw.GatewayPairing.parse(text);
+  } on Object {
+    return null;
+  }
+}
+
+/// Whether [text] is shaped like a gateway payload even when it did not parse
+/// (expired or future version): base64url of a JSON object starts with `eyJ`.
+bool looksLikeGatewayPayload(String text) => text.trim().startsWith('eyJ');
