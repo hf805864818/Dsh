@@ -1,4 +1,4 @@
-import 'dart:async';
+﻿import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -10,6 +10,7 @@ import '../../runtime/local_footprint.dart';
 import '../../runtime/runtime_state.dart';
 import '../../state/app_info.dart';
 import '../../state/connection_state.dart';
+import '../../state/gateway_hosts.dart';
 import '../../state/hosts_state.dart';
 import '../common/app_dialog.dart';
 import '../common/ask_ai.dart';
@@ -25,6 +26,7 @@ import 'host_status.dart';
 import 'link_progress.dart';
 import 'network_details_sheet.dart';
 import 'pairing_page.dart';
+import 'gateway_pair_page.dart';
 import 'relay_credit.dart';
 import 'relay_login_sheet.dart';
 import 'ssh_host_form.dart';
@@ -484,6 +486,21 @@ class _RelaySection extends ConsumerWidget {
             title: l10n.remotePairAddComputer,
             onTap: () => Navigator.of(context).push(RemotePairingPage.route()),
           ),
+        for (final gw in ref.watch(gatewayHostsProvider).hosts)
+          SettingsTile(
+            icon: hostKindIcon(HostKind.gateway),
+            tinted: false,
+            title: gw.name,
+            subtitle: gw.url,
+            onTap: () => onUse(HostRef.gateway(gw.id, name: gw.name)),
+          ),
+        SettingsTile(
+          icon: hostKindIcon(HostKind.gateway),
+          tinted: false,
+          title: '添加移动网关',
+          subtitle: '扫码或粘贴配对串，直连 /ws/mobile',
+          onTap: () => GatewayPairPage.open(context),
+        ),
       ],
     );
   }
@@ -723,3 +740,4 @@ class _RelayRow extends ConsumerWidget {
     );
   }
 }
+
