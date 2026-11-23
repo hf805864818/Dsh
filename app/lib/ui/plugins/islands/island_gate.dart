@@ -43,6 +43,7 @@ bool islandHostAllowed(
   bool override = false,
 }) => switch (kind) {
   HostKind.relay => false,
+  HostKind.gateway => false,
   HostKind.ssh => true,
   HostKind.local => override || (reported == true && probed == RouteGuard.present),
 };

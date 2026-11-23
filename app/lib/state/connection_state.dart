@@ -5,6 +5,7 @@ import 'package:dsh_client/dsh_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../l10n/l10n.dart';
+import '../remote/gateway/gateway_host_link.dart';
 import '../remote/link_status.dart';
 import '../remote/network_watch.dart';
 import '../remote/relay/relay_backend.dart';
@@ -14,6 +15,7 @@ import '../runtime/runtime_bridge.dart';
 import '../runtime/container_paths.dart';
 import 'workspaces_state.dart';
 import '../runtime/runtime_state.dart';
+import 'gateway_hosts.dart';
 import 'hosts_state.dart';
 import 'permission_default_repair.dart';
 import 'provider_backend.dart';
@@ -208,6 +210,20 @@ final hostLinkProvider = Provider.autoDispose.family<HostLink?, HostRef>((ref, h
       });
       ref.onDispose(() => unawaited(link.close()));
       return link;
+    case HostKind.gateway:
+      final gatewayConfig = ref.watch(gatewayHostsProvider.select((s) => s.byId(host.id)));
+      if (gatewayConfig == null) return null;
+      final gatewaySecrets = ref.read(secretStoreProvider);
+      final gatewayLink = GatewayHostLink(
+        config: gatewayConfig,
+        loadToken: () => gatewaySecrets.read(gatewayConfig.secretKey),
+        kicks: ref.read(networkKicksProvider),
+      );
+      ref.listen(gatewayHostsProvider.select((s) => s.byId(host.id)), (_, next) {
+        if (next != null) gatewayLink.updateConfig(next);
+      });
+      ref.onDispose(() => unawaited(gatewayLink.close()));
+      return gatewayLink;
     case HostKind.relay:
       final backend = ref.watch(relayBackendProvider);
       final link = RelayHostLink(
@@ -254,6 +270,7 @@ final hostNameProvider = Provider.autoDispose.family<String?, HostRef>((ref, hos
     HostKind.local => appL10n.commonThisPhone,
     HostKind.ssh => ref.watch(hostsProvider.select((s) => s.sshById(host.id)?.name)),
     HostKind.relay => ref.watch(relayAccountProvider.select((a) => a.value?.hostById(host.id)?.name)) ?? host.name,
+    HostKind.gateway => ref.watch(gatewayHostsProvider.select((s) => s.byId(host.id)?.name)) ?? host.name,
   };
 });
 
@@ -553,6 +570,7 @@ AsyncValue<HostConnection?> _connectionForHost(Ref ref, HostRef host) {
       if (!loaded) return const AsyncLoading();
       return ref.watch(remoteConnectionProvider(host));
     case HostKind.relay:
+    case HostKind.gateway:
       return ref.watch(remoteConnectionProvider(host));
   }
 }
