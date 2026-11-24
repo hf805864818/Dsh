@@ -35,6 +35,9 @@ Map<String, Object?> promptMessageParams(Map<String, Object?> args, {String? ses
 
   return <String, Object?>{
     'sessionId': ?sessionId,
+    // The Host echoes this back on the `user/message` event as `requestId`;
+    // without it the composer's optimistic bubble never clears.
+    'requestId': ?_string(request['requestId']),
     'text': ?(text ?? _string(request['text'])),
     if (images.isNotEmpty) 'images': images,
     if (files.isNotEmpty) 'files': files,

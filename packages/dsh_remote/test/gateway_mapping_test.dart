@@ -35,6 +35,21 @@ void main() {
       ]);
     });
 
+    test('carries requestId so the Host can echo the optimistic bubble', () {
+      final params = promptMessageParams(<String, Object?>{
+        'request': <String, Object?>{
+          'requestId': 'req-42',
+          'sessionId': 'session-1',
+          'content': <Object?>[
+            <String, Object?>{'type': 'text', 'text': 'hi'},
+          ],
+        },
+      });
+      // Without this the gateway's `user/message` event has no requestId and
+      // the composer stays on "sending" even though the turn ran.
+      expect(params['requestId'], 'req-42');
+    });
+
     test('accepts the older parts name and ignores non-text parts', () {
       final params = promptMessageParams(<String, Object?>{
         'request': <String, Object?>{
