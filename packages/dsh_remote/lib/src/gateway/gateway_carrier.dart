@@ -350,6 +350,10 @@ class GatewayCarrier implements DshCarrier {
           'agentPreset': gatewayString(reply, 'agentPreset'),
         };
 
+      // DSH refreshes the session list off `$events`: `api-session/added`
+      // inserts a row, `api-session/activity` bumps its order and preview.
+      // Without these the list only changes when something else re-lists it.
+
       case 'directoryPicker/list':
         // The gateway's `directories` reply already carries path/home/entries.
         final reply = await _client.request(
@@ -806,8 +810,19 @@ class _GatewayMuxLink implements DshMuxLink {
   /// Stream id of the Host `$events` link, where asks are delivered.
   String? _eventsStreamId;
 
-  void _emitHost(Map<String, Object?> value) {
-    final streamId = _eventsStreamId;
+  /// Tells DSH a session moved: `api-session/activity` is (sessionId, time).
+  void _emitSessionActivity(String sessionId, int? time) {
+    _emitHost(<String, Object?>{
+      'type': 'emit',
+      'event': 'api-session/activity',
+      'args': <Object?>[
+        sessionId,
+        time ?? DateTime.now().millisecondsSinceEpoch,
+      ],
+    });
+  }
+
+  void _emitHost(Map<String, Object?> value) {    final streamId = _eventsStreamId;
     if (streamId == null) return;
     _emit(<String, Object?>{'type': 'item', 'streamId': streamId, 'value': value});
   }
@@ -869,6 +884,7 @@ class _GatewayMuxLink implements DshMuxLink {
           return;
         }
         _emitEvent(streamId, frame);
+        _emitSessionActivity(sessionId, gatewayInt(frame, 'time'));
       case GatewayKind.approvalRequested:
         final rpcId = gatewayString(frame, 'rpcId');
         final sessionId = gatewayString(frame, 'sessionId');
@@ -924,17 +940,11 @@ class _GatewayMuxLink implements DshMuxLink {
         _emitSnapshot(streamId, sessionId, frame);
       case GatewayKind.sessionTitleChanged:
         final sessionId = gatewayString(frame, 'sessionId');
-        final title = gatewayString(frame, 'title');
         if (sessionId == null) return;
-        _emit(<String, Object?>{
-          'type': 'item',
-          'streamId': hostEventsEndpoint,
-          'value': <String, Object?>{
-            'type': 'emit',
-            'event': 'api-session/status',
-            'args': <Object?>[sessionId, title ?? ''],
-          },
-        });
+        // DSH reads `api-session/status` args as (sessionId, running), so a
+        // title there was never going to reach the list. Activity is what moves
+        // a row and refreshes its preview.
+        _emitSessionActivity(sessionId, gatewayInt(frame, 'time'));
       default:
         break;
     }
