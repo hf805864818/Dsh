@@ -73,6 +73,12 @@ abstract final class GatewayRequest {
   static const String fileDownloadOpen = 'file-download-open';
   static const String fileDownloadRead = 'file-download-read';
   static const String fileDownloadCancel = 'file-download-cancel';
+  static const String scheduleCatalog = 'schedule-catalog';
+  static const String speechCatalog = 'speech-catalog';
+  static const String speechTranscribe = 'speech-transcribe';
+  static const String speechConfigure = 'speech-configure';
+  static const String speechPrepare = 'speech-prepare';
+  static const String speechCancelPreparation = 'speech-cancel-preparation';
 }
 
 /// Reply / push frame kinds the host sends.
@@ -108,6 +114,12 @@ abstract final class GatewayKind {
   static const String fileDownloadChunk = 'file-download-chunk';
   static const String fileList = 'file-list';
   static const String fileResolved = 'file-resolved';
+  static const String scheduleCatalog = 'schedule-catalog';
+  static const String speechCatalog = 'speech-catalog';
+  static const String speechTranscribe = 'speech-transcribe';
+  static const String speechConfigure = 'speech-configure';
+  static const String speechPrepare = 'speech-prepare';
+  static const String speechCancelPreparation = 'speech-cancel-preparation';
 }
 
 /// Gateway close codes that need a specific reaction.

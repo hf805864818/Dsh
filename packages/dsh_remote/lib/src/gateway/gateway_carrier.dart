@@ -55,6 +55,12 @@ const Set<String> _servedEndpoints = <String>{
   'workspaceFiles/stat',
   'workspaceFiles/readBytes',
   'goals/get',
+  'schedule/catalog',
+  'speech/catalog',
+  'speech/transcribe',
+  'speech/configure',
+  'speech/prepare',
+  'speech/cancelPreparation',
 };
 
 /// A gateway connection presented as a `DshCarrier`.
@@ -517,6 +523,76 @@ class GatewayCarrier implements DshCarrier {
           if (projection['createdAt'] != null) 'createdAt': projection['createdAt'],
           if (projection['updatedAt'] != null) 'updatedAt': projection['updatedAt'],
         };
+
+      case 'speech/catalog':
+        final catalog = await _client.request(
+          GatewayRequest.speechCatalog,
+          expect: <String>{GatewayKind.speechCatalog},
+          timeout: _or(timeout),
+        );
+        return catalog;
+
+      case 'speech/transcribe':
+        // DSH nests the audio under `request`; the gateway reads it at the top.
+        final speechRequest = asGatewayMap(args['request']) ?? args;
+        final transcript = await _client.request(
+          GatewayRequest.speechTranscribe,
+          params: <String, Object?>{
+            'audioBase64': ?gatewayString(speechRequest, 'audioBase64'),
+            'providerId': ?gatewayString(speechRequest, 'providerId'),
+            'language': ?gatewayString(speechRequest, 'language'),
+          },
+          expect: <String>{GatewayKind.speechTranscribe},
+          timeout: timeout ?? const Duration(minutes: 3),
+        );
+        return <String, Object?>{
+          'text': gatewayString(transcript, 'text') ?? '',
+          'audioSeconds': transcript['audioSeconds'] ?? 0,
+        };
+
+      case 'speech/configure':
+        final patch = asGatewayMap(args['patch']) ?? const <String, Object?>{};
+        await _client.request(
+          GatewayRequest.speechConfigure,
+          params: <String, Object?>{
+            'providerId': ?gatewayString(patch, 'providerId'),
+            'language': ?gatewayString(patch, 'language'),
+          },
+          expect: <String>{'speech-configured', 'speech-configure'},
+          timeout: _or(timeout),
+        );
+        return null;
+
+      case 'speech/prepare':
+        final prepareOptions = asGatewayMap(args['options']);
+        await _client.request(
+          GatewayRequest.speechPrepare,
+          params: <String, Object?>{
+            'providerId': ?gatewayString(args, 'providerId'),
+            'options': ?prepareOptions,
+          },
+          expect: <String>{'speech-prepared', 'speech-prepare'},
+          timeout: _or(timeout),
+        );
+        return null;
+
+      case 'speech/cancelPreparation':
+        await _client.request(
+          GatewayRequest.speechCancelPreparation,
+          params: <String, Object?>{'providerId': ?gatewayString(args, 'providerId')},
+          expect: <String>{'speech-preparation-cancelled', 'speech-cancel-preparation'},
+          timeout: _or(timeout),
+        );
+        return null;
+
+      case 'schedule/catalog':
+        // DSH wants a plain list; the gateway spreads its catalog into the frame.
+        final catalog = await _client.request(
+          GatewayRequest.scheduleCatalog,
+          expect: <String>{GatewayKind.scheduleCatalog},
+          timeout: _or(timeout),
+        );
+        return catalog['catalog'] ?? catalog['tasks'] ?? catalog['items'] ?? const <Object?>[];
 
       case 'commands/execute':
         // Slash commands as typed in the composer; `/compact` is the long one.
