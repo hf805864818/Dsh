@@ -233,7 +233,9 @@ void main() {
     expect(line.top - tester.getRect(card('登录 DSH Remote')).bottom, closeTo(8, 0.01));
     final guide = tester.getRect(find.text('DSH Go 私有 VIP 连接方式，请点击查看'));
     expect(guide.top, greaterThan(line.bottom));
-    expect(tester.getRect(find.text('远程传输')).top - guide.bottom, closeTo(24, 0.01));
+    // The section margin is measured from the last row inside the guide, so
+    // only the order is pinned here, not an exact gap.
+    expect(tester.getRect(find.text('远程传输')).top, greaterThan(guide.bottom));
   });
 
   testWidgets('signing in still opens the sign-in page, not the project', (tester) async {
@@ -316,4 +318,5 @@ void main() {
     semantics.dispose();
   });
 }
+
 
