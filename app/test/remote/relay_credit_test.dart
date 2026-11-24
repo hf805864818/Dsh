@@ -1,4 +1,4 @@
-﻿// The credit under the DSH Remote card: only the project name opens
+// The credit under the DSH Remote card: only the project name opens
 // github.com/liguobao/ds-harness-remote; its tap area reaches 48dp tall into
 // the empty space around the line and stays clear of every control near it.
 
@@ -55,6 +55,11 @@ void main() {
 
   Future<void> pump(WidgetTester tester, {RelayBackend? relay}) async {
     usePhoneSurface(tester);
+    // The Remote screen grew two sections; give it a taller canvas so the whole
+    // page (credit footer through SSH) is built and measurable.
+    tester.view.physicalSize = const Size(390 * 2, 3200 * 2);
+    tester.view.devicePixelRatio = 2;
+    addTearDown(tester.view.reset);
     await tester.pumpWidget(
       goldenApp(
         home: const RemoteScreen(),
@@ -184,9 +189,6 @@ void main() {
     // One button per sign-in provider; the lowest one sits nearest the credit line.
     final signIn = tester.getRect(find.byWidgetPredicate((w) => w is FilledButton).last);
     final selfHosted = tester.getRect(find.widgetWithText(TextButton, '自建服务器 · 邮箱登录'));
-    // The page grew two sections above SSH; bring it into view so it is built.
-    await tester.scrollUntilVisible(find.text('SSH 主机'), 300);
-    await tester.pump();
     final sshTitle = tester.getRect(find.text('SSH 主机'));
     final sshCard = tester.getRect(card('添加 SSH 主机'));
     final line = lineRect(tester);
@@ -318,5 +320,6 @@ void main() {
     semantics.dispose();
   });
 }
+
 
 
