@@ -35,6 +35,9 @@ const Set<String> _servedEndpoints = <String>{
   'workspace/archiveSession',
   'userQuestions/answer',
   r'$events/result',
+  'session/modelCatalog',
+  'session/selectModel',
+  'llm/listProviders',
 };
 
 /// A gateway connection presented as a `DshCarrier`.
@@ -184,6 +187,47 @@ class GatewayCarrier implements DshCarrier {
           timeout: _or(timeout),
         );
         return frame['data'] ?? frame['bytes'] ?? frame;
+
+      case 'session/modelCatalog':
+        // The gateway's `models` groups are already the shape ModelCatalog
+        // reads; `current` is the session's selection.
+        final reply = await _client.request(
+          GatewayRequest.models,
+          expect: <String>{GatewayKind.models},
+          timeout: _or(timeout),
+        );
+        final groups = asGatewayMaps(reply['groups']);
+        return <String, Object?>{
+          'groups': groups,
+          'default': reply['current'],
+          'routableProviders': <String>[
+            for (final group in groups)
+              if (gatewayString(group, 'id') != null) gatewayString(group, 'id')!,
+          ],
+        };
+
+      case 'session/selectModel':
+        final request = asGatewayMap(args['request']) ?? args;
+        final reply = await _client.request(
+          GatewayRequest.selectModel,
+          params: <String, Object?>{
+            'sessionId': ?_sessionIdOf(request),
+            'provider': ?gatewayString(request, 'provider'),
+            'model': ?gatewayString(request, 'model'),
+            'reasoningEffort': ?gatewayString(request, 'reasoningEffort'),
+          },
+          expect: <String>{GatewayKind.selectModel},
+          timeout: _or(timeout),
+        );
+        return <String, Object?>{'selected': reply['selected'] ?? reply};
+
+      case 'llm/listProviders':
+        final reply = await _client.request(
+          GatewayRequest.providers,
+          expect: <String>{GatewayKind.providers},
+          timeout: _or(timeout),
+        );
+        return reply['providers'] ?? reply['items'] ?? const <Object?>[];
 
       case 'userQuestions/answer':
         // `{agentId, callId, answer: {answers}}`: the gateway frames carry no

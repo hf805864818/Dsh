@@ -50,6 +50,15 @@ abstract final class GatewayRequest {
   static const String approvalResponse = 'approval-response';
   static const String questionAnswer = 'question-answer';
   static const String questionCancel = 'question-cancel';
+  static const String models = 'models';
+  static const String selectModel = 'select-model';
+  static const String providers = 'providers';
+  static const String commands = 'commands';
+  static const String commandExecute = 'command-execute';
+  static const String permissionOptions = 'permission-options';
+  static const String permission = 'permission';
+  static const String tasksList = 'tasks';
+  static const String goalInfo = 'goal';
 }
 
 /// Reply / push frame kinds the host sends.
@@ -71,6 +80,9 @@ abstract final class GatewayKind {
   static const String sessionCancelled = 'session-cancelled';
   static const String questionRequested = 'question-requested';
   static const String questionResolved = 'question-resolved';
+  static const String models = 'models';
+  static const String selectModel = 'select-model';
+  static const String providers = 'providers';
   static const String approvalRequested = 'approval-requested';
   static const String approvalResolved = 'approval-resolved';
 }
