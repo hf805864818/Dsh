@@ -818,6 +818,10 @@ class _GatewayMuxLink implements DshMuxLink {
 
   /// Streams that already opened with a snapshot (a second one resyncs).
   final Set<String> _snapshotSent = <String>{};
+
+  /// Event frames that arrived before their stream's snapshot.
+  final Map<String, List<Map<String, Object?>>> _earlyEvents =
+      <String, List<Map<String, Object?>>>{};
   bool _closed = false;
 
   @override
@@ -857,19 +861,14 @@ class _GatewayMuxLink implements DshMuxLink {
             .map((entry) => entry.key)
             .firstOrNull;
         if (streamId == null) return;
-        _emit(<String, Object?>{
-          'type': 'item',
-          'streamId': streamId,
-          'value': <String, Object?>{
-            'type': 'event',
-            'event': <String, Object?>{
-              'type': gatewayString(event, 'type') ?? 'unknown',
-              'seq': gatewayInt(frame, 'seq') ?? 0,
-              'time': gatewayInt(frame, 'time') ?? 0,
-              'data': event,
-            },
-          },
-        });
+        // DshClient rejects an event that arrives before the snapshot, and a
+        // prompt can produce one while the snapshot is still in flight, so hold
+        // those until the snapshot has been handed over.
+        if (!_snapshotSent.contains(streamId)) {
+          (_earlyEvents[streamId] ??= <Map<String, Object?>>[]).add(frame);
+          return;
+        }
+        _emitEvent(streamId, frame);
       case GatewayKind.approvalRequested:
         final rpcId = gatewayString(frame, 'rpcId');
         final sessionId = gatewayString(frame, 'sessionId');
@@ -1020,10 +1019,16 @@ class _GatewayMuxLink implements DshMuxLink {
   void _emitSnapshot(String streamId, String sessionId, Map<String, Object?> frame) {
     if (!_snapshotSent.add(streamId)) return;
     final events = GatewayClient.historyEvents(frame);
-    var cursor = -1;
-    for (final event in events) {
-      final seq = gatewayInt(event, 'seq');
-      if (seq != null && seq > cursor) cursor = seq;
+    // The frame's own `cursor` is the Host log position the page was cut at;
+    // taking the page's last seq instead loses events the page trimmed away and
+    // makes the very next event look like a gap, which DshClient answers with a
+    // resync. Fall back to the page's tail only when the frame omits it.
+    var cursor = gatewayInt(frame, 'cursor') ?? -1;
+    if (cursor < 0) {
+      for (final event in events) {
+        final seq = gatewayInt(event, 'seq');
+        if (seq != null && seq > cursor) cursor = seq;
+      }
     }
     final cached = _sessions[sessionId];
     _emit(<String, Object?>{
@@ -1049,6 +1054,35 @@ class _GatewayMuxLink implements DshMuxLink {
             cached?['projections'] ??
             <String, Object?>{'asOfSeq': cursor, 'values': <String, Object?>{}},
         'assistantStream': frame['assistantStream'],
+      },
+    });
+    // Events that raced ahead of the snapshot are handed over now, in order.
+    final queued = _earlyEvents.remove(streamId);
+    if (queued != null) {
+      for (final event in queued) {
+        _emitEvent(streamId, event);
+      }
+    }
+  }
+
+  /// Forwards one session event as a follow item.
+  void _emitEvent(String streamId, Map<String, Object?> frame) {
+    final event = asGatewayMap(frame['event']);
+    if (event == null) return;
+    _emit(<String, Object?>{
+      'type': 'item',
+      'streamId': streamId,
+      'value': <String, Object?>{
+        'type': 'event',
+        'event': <String, Object?>{
+          'type': gatewayString(event, 'type') ?? 'unknown',
+          'seq': gatewayInt(frame, 'seq') ?? gatewayInt(event, 'seq') ?? 0,
+          'time': gatewayInt(frame, 'time') ?? gatewayInt(event, 'time') ?? 0,
+          'data': <String, Object?>{
+            for (final entry in event.entries)
+              if (entry.key != 'type') entry.key: entry.value,
+          },
+        },
       },
     });
   }
