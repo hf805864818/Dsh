@@ -66,6 +66,13 @@ abstract final class GatewayRequest {
   static const String directories = 'directories';
   static const String workspaceCreate = 'workspace-create';
   static const String directoryCreate = 'directory-create';
+  static const String fileUploadOpen = 'file-upload-open';
+  static const String fileUploadChunk = 'file-upload-chunk';
+  static const String fileUploadFinish = 'file-upload-finish';
+  static const String fileResolve = 'file-resolve';
+  static const String fileDownloadOpen = 'file-download-open';
+  static const String fileDownloadRead = 'file-download-read';
+  static const String fileDownloadCancel = 'file-download-cancel';
 }
 
 /// Reply / push frame kinds the host sends.
@@ -94,6 +101,13 @@ abstract final class GatewayKind {
   static const String approvalResolved = 'approval-resolved';
   static const String questionResponse = 'question-response';
   static const String search = 'search';
+  static const String fileUploadOpened = 'file-upload-opened';
+  static const String fileUploadChunkAccepted = 'file-upload-chunk-accepted';
+  static const String fileUploadCompleted = 'file-upload-completed';
+  static const String fileDownloadOpened = 'file-download-opened';
+  static const String fileDownloadChunk = 'file-download-chunk';
+  static const String fileList = 'file-list';
+  static const String fileResolved = 'file-resolved';
 }
 
 /// Gateway close codes that need a specific reaction.

@@ -17,7 +17,10 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:dsh_client/dsh_client.dart';
 
 import 'gateway_client.dart';
@@ -48,6 +51,10 @@ const Set<String> _servedEndpoints = <String>{
   'directoryPicker/createDirectory',
   'workspace/create',
   'session/create',
+  'fileUploads/upload',
+  'workspaceFiles/stat',
+  'workspaceFiles/readBytes',
+  'goals/get',
 };
 
 /// A gateway connection presented as a `DshCarrier`.
@@ -379,6 +386,138 @@ class GatewayCarrier implements DshCarrier {
         );
         return reply;
 
+      case 'fileUploads/upload':
+        // DSH sends the whole file as one base64 frame; the gateway wants a
+        // sha256, then open / chunk… / finish.
+        final uploadSession = gatewayString(args, 'agentId') ?? _sessionIdOf(args);
+        final uploadRequest = asGatewayMap(args['request']) ?? args;
+        final uploadName = gatewayString(uploadRequest, 'name') ?? 'upload.bin';
+        final uploadBytes = base64Decode(gatewayString(uploadRequest, 'data') ?? '');
+        final uploadRequestId = 'upload-${DateTime.now().microsecondsSinceEpoch}';
+        final open = await _client.request(
+          GatewayRequest.fileUploadOpen,
+          params: <String, Object?>{
+            'requestId': uploadRequestId,
+            'sessionId': ?uploadSession,
+            'name': uploadName,
+            'size': uploadBytes.length,
+            'sha256': crypto.sha256.convert(uploadBytes).toString(),
+          },
+          expect: <String>{GatewayKind.fileUploadOpened},
+          timeout: const Duration(minutes: 2),
+        );
+        final uploadId = gatewayString(open, 'uploadId');
+        if (uploadId == null) {
+          throw const DshRemoteException('gateway/file-upload', '网关没有返回 uploadId。');
+        }
+        final chunkBytes = gatewayInt(open, 'chunkBytes') ?? 256 * 1024;
+        var sent = 0;
+        while (sent < uploadBytes.length) {
+          final end = sent + chunkBytes > uploadBytes.length ? uploadBytes.length : sent + chunkBytes;
+          await _client.request(
+            GatewayRequest.fileUploadChunk,
+            params: <String, Object?>{
+              'requestId': uploadRequestId,
+              'uploadId': uploadId,
+              'sessionId': ?uploadSession,
+              'offset': sent,
+              'data': base64Encode(uploadBytes.sublist(sent, end)),
+            },
+            expect: <String>{GatewayKind.fileUploadChunkAccepted},
+            timeout: const Duration(minutes: 2),
+          );
+          sent = end;
+        }
+        final finished = await _client.request(
+          GatewayRequest.fileUploadFinish,
+          params: <String, Object?>{
+            'requestId': uploadRequestId,
+            'uploadId': uploadId,
+            'sessionId': ?uploadSession,
+          },
+          expect: <String>{GatewayKind.fileUploadCompleted},
+          timeout: const Duration(minutes: 5),
+        );
+        return <String, Object?>{
+          'receiptId': gatewayString(finished, 'receiptId'),
+          'file': finished['file'],
+        };
+
+      case 'workspaceFiles/stat':
+        final statPath = gatewayString(args, 'path') ?? '';
+        final resolved = await _client.request(
+          GatewayRequest.fileResolve,
+          params: <String, Object?>{
+            'sessionId': ?gatewayString(args, 'workspaceFileScopeId'),
+            'path': statPath,
+          },
+          expect: <String>{GatewayKind.fileResolved},
+          timeout: _or(timeout),
+        );
+        return <String, Object?>{
+          'absolutePath': gatewayString(resolved, 'path') ?? statPath,
+          'version': '${gatewayInt(resolved, 'modifiedAt') ?? 0}',
+          'bytes': gatewayInt(resolved, 'size'),
+        };
+
+      case 'workspaceFiles/readBytes':
+        // One transfer per path, read forward; DSH asks window by window.
+        final readPath = gatewayString(args, 'path') ?? '';
+        final readSession = gatewayString(args, 'workspaceFileScopeId');
+        final options = asGatewayMap(args['options']);
+        final range = asGatewayMap(options?['range']);
+        final wantedOffset = gatewayInt(range ?? const <String, Object?>{}, 'offset') ?? 0;
+        final wantedLength = gatewayInt(range ?? const <String, Object?>{}, 'length') ?? 1 << 20;
+        final transfer = await _transferFor(readSession, readPath);
+        final want = wantedOffset + wantedLength;
+        while (transfer.buffered.length < want && !transfer.eof) {
+          final chunk = await _client.request(
+            GatewayRequest.fileDownloadRead,
+            params: <String, Object?>{'transferId': transfer.transferId, 'offset': transfer.buffered.length},
+            expect: <String>{GatewayKind.fileDownloadChunk},
+            timeout: const Duration(minutes: 2),
+          );
+          final data = gatewayString(chunk, 'data');
+          if (data == null || data.isEmpty) {
+            transfer.eof = true;
+          } else {
+            transfer.buffered.add(base64Decode(data));
+          }
+          if (chunk['eof'] == true) transfer.eof = true;
+        }
+        final bytesOut = transfer.buffered.takeBytes();
+        final from = wantedOffset < bytesOut.length ? wantedOffset : bytesOut.length;
+        final to = want < bytesOut.length ? want : bytesOut.length;
+        final window = bytesOut.sublist(from, to);
+        // Keep what is left for the next window.
+        transfer.buffered.add(bytesOut.sublist(to));
+        return <String, Object?>{
+          'version': transfer.version,
+          'data': base64Encode(window),
+          'bytes': to,
+          'eof': transfer.eof && to >= bytesOut.length,
+        };
+
+      case 'goals/get':
+        // The gateway's goal projection already carries the snapshot; flatten
+        // it so GoalSnapshot.fromJson sees `ref`/`objective`/`phase` on top.
+        final goalSession = gatewayString(args, 'agentId') ?? _sessionIdOf(args);
+        final goalReply = await _client.request(
+          GatewayRequest.goalInfo,
+          params: <String, Object?>{'sessionId': ?goalSession},
+          expect: <String>{'goal'},
+          timeout: _or(timeout),
+        );
+        final projection = asGatewayMap(goalReply['goal']);
+        final snapshot = asGatewayMap(projection?['goal']);
+        if (projection == null || snapshot == null) return null;
+        return <String, Object?>{
+          ...snapshot,
+          if (projection['roundsStarted'] != null) 'roundsStarted': projection['roundsStarted'],
+          if (projection['createdAt'] != null) 'createdAt': projection['createdAt'],
+          if (projection['updatedAt'] != null) 'updatedAt': projection['updatedAt'],
+        };
+
       case 'commands/execute':
         // Slash commands as typed in the composer; `/compact` is the long one.
         final commandSession = gatewayString(args, 'agentId') ?? gatewayString(args, 'sessionId');
@@ -513,8 +652,32 @@ class GatewayCarrier implements DshCarrier {
   /// gateway's own `rpcId`).
   final Map<String, _PendingRequest> _pendingRequests = <String, _PendingRequest>{};
 
-  _PendingRequest? _pendingQuestionFor(String? sessionId) {
-    for (final entry in _pendingRequests.values) {
+  /// Open byte transfers per "session|path", so windows read forward.
+  final Map<String, _FileTransfer> _transfers = <String, _FileTransfer>{};
+
+  Future<_FileTransfer> _transferFor(String? sessionId, String path) async {
+    final key = '${sessionId ?? ''}|$path';
+    final existing = _transfers[key];
+    if (existing != null) return existing;
+    final requestId = 'download-${DateTime.now().microsecondsSinceEpoch}';
+    final opened = await _client.request(
+      GatewayRequest.fileDownloadOpen,
+      params: <String, Object?>{'requestId': requestId, 'sessionId': ?sessionId, 'path': path},
+      expect: <String>{GatewayKind.fileDownloadOpened},
+      timeout: _or(null),
+    );
+    final transferId = gatewayString(opened, 'transferId');
+    if (transferId == null) {
+      throw const DshRemoteException('workspace-file/not-found', '网关没有返回 transferId。');
+    }
+    final transfer = _FileTransfer(
+      transferId: transferId,
+      version: '${gatewayInt(opened, 'size') ?? 0}',
+    );
+    _transfers[key] = transfer;
+    return transfer;
+  }
+  _PendingRequest? _pendingQuestionFor(String? sessionId) {    for (final entry in _pendingRequests.values) {
       if (entry.question && (sessionId == null || entry.sessionId == sessionId)) return entry;
     }
     return null;
@@ -874,4 +1037,13 @@ class _PendingRequest {
   final String sessionId;
   final String? approvalId;
   final bool question;
+}
+/// One open download: bytes read so far, and whether the file ended.
+class _FileTransfer {
+  _FileTransfer({required this.transferId, required this.version});
+
+  final String transferId;
+  final String version;
+  final BytesBuilder buffered = BytesBuilder(copy: false);
+  bool eof = false;
 }
