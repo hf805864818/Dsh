@@ -65,6 +65,7 @@ abstract final class GatewayRequest {
   static const String sessionCreate = 'session-create';
   static const String directories = 'directories';
   static const String workspaceCreate = 'workspace-create';
+  static const String directoryCreate = 'directory-create';
 }
 
 /// Reply / push frame kinds the host sends.
@@ -91,6 +92,8 @@ abstract final class GatewayKind {
   static const String providers = 'providers';
   static const String approvalRequested = 'approval-requested';
   static const String approvalResolved = 'approval-resolved';
+  static const String questionResponse = 'question-response';
+  static const String search = 'search';
 }
 
 /// Gateway close codes that need a specific reaction.

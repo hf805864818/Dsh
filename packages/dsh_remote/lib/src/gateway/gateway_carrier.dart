@@ -42,6 +42,12 @@ const Set<String> _servedEndpoints = <String>{
   'session/fork',
   'session/updateQueue',
   'workspace/list',
+  'commands/execute',
+  'permissionPresets/catalog',
+  'directoryPicker/list',
+  'directoryPicker/createDirectory',
+  'workspace/create',
+  'session/create',
 };
 
 /// A gateway connection presented as a `DshCarrier`.
@@ -134,21 +140,45 @@ class GatewayCarrier implements DshCarrier {
       case 'session/rename':
         final sessionId = gatewayString(args, 'sessionId') ?? gatewayString(args, 'address');
         final title = gatewayString(args, 'title') ?? gatewayString(args, 'name');
-        await _client.request(
+        final frame = await _client.request(
           GatewayRequest.sessionRename,
           params: <String, Object?>{'sessionId': ?sessionId, 'title': ?title},
+          // Reply kind is `session-renamed`; DSH reads `title` back.
+          expect: <String>{GatewayKind.sessionRenamed},
           timeout: _or(timeout),
         );
-        return null;
+        return <String, Object?>{'title': gatewayString(frame, 'title') ?? title};
 
       case 'session/prompt':
+        // DSH sends the turn as `request.content` parts (text, images, file
+        // receipts) plus `mode`; the gateway's `message` wants those split out.
         final sessionId = _sessionIdOf(args) ?? gatewayString(args, 'sessionId');
-        final text = gatewayString(args, 'text') ?? _promptText(args);
+        final request = asGatewayMap(args['request']) ?? args;
+        final text = gatewayString(request, 'text') ?? _promptText(request);
+        final images = <Object?>[];
+        final files = <Object?>[];
+        final content = request['content'];
+        if (content is List) {
+          for (final part in content) {
+            final map = asGatewayMap(part);
+            if (map == null) continue;
+            switch (gatewayString(map, 'type')) {
+              case 'image':
+                images.add(map);
+              case 'file':
+                files.add(<String, Object?>{'receiptId': gatewayString(map, 'receiptId')});
+            }
+          }
+        }
         await _client.request(
           GatewayRequest.message,
           params: <String, Object?>{
             'sessionId': ?sessionId,
             'text': ?text,
+            if (images.isNotEmpty) 'images': images,
+            if (files.isNotEmpty) 'files': files,
+            'mode': ?gatewayString(request, 'mode'),
+            'clientTimeZone': ?gatewayString(request, 'clientTimeZone'),
           },
           expect: _promptExpect(),
           timeout: _or(timeout),
@@ -160,37 +190,48 @@ class GatewayCarrier implements DshCarrier {
         await _client.request(
           GatewayRequest.sessionCancel,
           params: <String, Object?>{'sessionId': ?sessionId},
+          expect: <String>{GatewayKind.sessionCancelled},
           timeout: _or(timeout),
         );
         return null;
 
       case 'workspace/archiveSession':
         final sessionId = gatewayString(args, 'sessionId') ?? _sessionIdOf(args);
-        await _client.request(
+        final frame = await _client.request(
           GatewayRequest.sessionArchive,
           params: <String, Object?>{'sessionId': ?sessionId},
+          expect: <String>{GatewayKind.sessionArchived},
           timeout: _or(timeout),
         );
-        return null;
+        return <String, Object?>{'archivedSessionIds': frame['archivedSessionIds'] ?? const <Object?>[]};
 
       case 'session/search':
         final query = gatewayString(args, 'query') ?? gatewayString(args, 'text') ?? '';
         final frame = await _client.request(
           GatewayRequest.search,
           params: <String, Object?>{'query': query},
+          expect: <String>{GatewayKind.search},
           timeout: _or(timeout),
         );
-        return frame['items'] ?? frame['results'] ?? const <Object?>[];
+        return <String, Object?>{
+          'items': frame['items'] ?? const <Object?>[],
+          'hasMore': frame['hasMore'] == true,
+        };
 
       case 'session/attachment':
         final sessionId = _sessionIdOf(args) ?? gatewayString(args, 'sessionId');
         final attachmentId = gatewayString(args, 'attachmentId') ?? gatewayString(args, 'id');
         final frame = await _client.request(
           GatewayRequest.attachment,
-          params: <String, Object?>{'sessionId': ?sessionId, 'attachmentId': ?attachmentId},
+          params: <String, Object?>{
+            'sessionId': ?sessionId,
+            'attachmentId': ?attachmentId,
+            if (args['attachment'] != null) 'attachment': args['attachment'],
+          },
           timeout: _or(timeout),
         );
-        return frame['data'] ?? frame['bytes'] ?? frame;
+        // DSH reads `{attachment, data}`; the gateway frame already is that.
+        return frame;
 
       case 'session/projections':
         // Four projection reads, merged. A projection the gateway refused must
@@ -201,7 +242,13 @@ class GatewayCarrier implements DshCarrier {
           throw const DshRemoteException('gateway/bad-request', 'session/projections needs a session');
         }
         final values = <String, Object?>{};
-        var asOfSeq = 0;
+        // Base: the projections the `sessions` row already carried (title,
+        // permissions, modelSelection, inbox...), so the panel is populated
+        // even before the live reads land.
+        final cachedProjections = asGatewayMap(_sessionCache[projectionsSession]?['projections']);
+        final cachedValues = asGatewayMap(cachedProjections?['values']);
+        if (cachedValues != null) values.addAll(cachedValues);
+        var asOfSeq = gatewayInt(cachedProjections ?? const <String, Object?>{}, 'asOfSeq') ?? 0;
         Future<void> take(String type, String kind, Map<String, String> keys) async {
           try {
             final reply = await _client.request(
@@ -246,14 +293,27 @@ class GatewayCarrier implements DshCarrier {
         return <String, Object?>{'sessionId': gatewayString(reply, 'sessionId') ?? ''};
 
       case 'session/updateQueue':
+        // DSH sends `action` as a map (`{kind, content}`); the gateway wants
+        // the plain verb plus the edited text.
         final queueRequest = asGatewayMap(args['request']) ?? args;
+        final action = asGatewayMap(queueRequest['action']);
+        final kind = gatewayString(action ?? const <String, Object?>{}, 'kind') ??
+            gatewayString(queueRequest, 'action') ??
+            'edit';
+        var text = gatewayString(queueRequest, 'text');
+        if (text == null) {
+          final content = action?['content'];
+          if (content is List && content.isNotEmpty) {
+            text = gatewayString(asGatewayMap(content.first) ?? const <String, Object?>{}, 'text');
+          }
+        }
         await _client.request(
           GatewayRequest.queueUpdate,
           params: <String, Object?>{
             'sessionId': ?_sessionIdOf(queueRequest),
             'itemId': ?gatewayString(queueRequest, 'itemId'),
-            'action': ?gatewayString(queueRequest, 'action'),
-            'text': ?gatewayString(queueRequest, 'text'),
+            'action': kind,
+            'text': ?text,
           },
           timeout: _or(timeout),
         );
@@ -266,6 +326,91 @@ class GatewayCarrier implements DshCarrier {
           timeout: _or(timeout),
         );
         return reply['workspaces'] ?? reply['items'] ?? reply;
+
+      case 'session/create':
+        // The gateway wants a requestId for this one; DSH only sends options.
+        final createRequest = asGatewayMap(args['request']) ?? args;
+        final reply = await _client.request(
+          GatewayRequest.sessionCreate,
+          params: <String, Object?>{
+            'requestId': 'create-${DateTime.now().microsecondsSinceEpoch}',
+            'workspaceId': ?gatewayString(createRequest, 'workspaceId'),
+            'cwd': ?gatewayString(createRequest, 'cwd'),
+            'sessionId': ?gatewayString(createRequest, 'sessionId'),
+            'agentPreset': ?gatewayString(createRequest, 'agentPreset'),
+          },
+          expect: <String>{'session-created'},
+          timeout: _or(timeout),
+        );
+        return <String, Object?>{
+          'sessionId': gatewayString(reply, 'sessionId') ?? '',
+          'agentPreset': gatewayString(reply, 'agentPreset'),
+        };
+
+      case 'directoryPicker/list':
+        // The gateway's `directories` reply already carries path/home/entries.
+        final reply = await _client.request(
+          GatewayRequest.directories,
+          params: <String, Object?>{'path': ?gatewayString(args, 'path')},
+          expect: <String>{'directories'},
+          timeout: _or(timeout),
+        );
+        return reply;
+
+      case 'directoryPicker/createDirectory':
+        final reply = await _client.request(
+          GatewayRequest.directoryCreate,
+          params: <String, Object?>{
+            'path': ?gatewayString(args, 'path'),
+            'name': ?gatewayString(args, 'name'),
+          },
+          expect: <String>{'directory-created', 'directories'},
+          timeout: _or(timeout),
+        );
+        return gatewayString(reply, 'path') ?? reply['path'];
+
+      case 'workspace/create':
+        final workspaceRequest = asGatewayMap(args['request']) ?? args;
+        final reply = await _client.request(
+          GatewayRequest.workspaceCreate,
+          params: <String, Object?>{'path': ?gatewayString(workspaceRequest, 'path')},
+          expect: <String>{'workspace-create', 'workspaces'},
+          timeout: _or(timeout),
+        );
+        return reply;
+
+      case 'commands/execute':
+        // Slash commands as typed in the composer; `/compact` is the long one.
+        final commandSession = gatewayString(args, 'agentId') ?? gatewayString(args, 'sessionId');
+        final line = gatewayString(args, 'line') ?? '';
+        final compact = line.trim().startsWith('/compact');
+        final reply = await _client.request(
+          GatewayRequest.commandExecute,
+          params: <String, Object?>{'sessionId': ?commandSession, 'line': line},
+          expect: <String>{'command-executed'},
+          timeout: compact ? const Duration(minutes: 30) : _or(timeout),
+        );
+        final result = asGatewayMap(reply['result']) ?? const <String, Object?>{};
+        return <String, Object?>{
+          'commandId': gatewayString(reply, 'commandId'),
+          'result': <String, Object?>{
+            'kind': gatewayString(result, 'kind') ?? 'success',
+            if (result['text'] != null) 'text': result['text'],
+          },
+        };
+
+      case 'permissionPresets/catalog':
+        // The gateway already answers the catalog shape this reads.
+        final reply = await _client.request(
+          GatewayRequest.permissionOptions,
+          expect: <String>{'permission-options'},
+          timeout: _or(timeout),
+        );
+        return <String, Object?>{
+          'options': reply['options'] ?? const <Object?>[],
+          'defaultOptions': reply['defaultOptions'] ?? reply['options'] ?? const <Object?>[],
+          'defaultPreset': reply['defaultPreset'] ?? '',
+        };
 
       case 'session/modelCatalog':
         // The gateway's `models` groups are already the shape ModelCatalog
@@ -324,6 +469,8 @@ class GatewayCarrier implements DshCarrier {
             'sessionId': pending.sessionId,
             'answers': answer['answers'] ?? const <Object?>[],
           },
+          // The reply is `question-response`, not the request's own kind.
+          expect: <String>{GatewayKind.questionResponse},
           timeout: const Duration(seconds: 20),
         );
         _pendingRequests.remove(pending.rpcId);
@@ -403,17 +550,17 @@ class GatewayCarrier implements DshCarrier {
   }
 
   /// Pulls the plain text out of a DSH prompt payload.
-  static String? _promptText(Map<String, Object?> args) {
-    final request = asGatewayMap(args['request']);
-    final source = request ?? args;
-    final direct = gatewayString(source, 'text');
+  static String? _promptText(Map<String, Object?> request) {
+    final direct = gatewayString(request, 'text');
     if (direct != null) return direct;
-    final parts = source['parts'];
+    // `content` is the current wire name; `parts` was the older one.
+    final parts = request['content'] ?? request['parts'];
     if (parts is List) {
       final buffer = StringBuffer();
       for (final part in parts) {
         final map = asGatewayMap(part);
         if (map == null) continue;
+        if (gatewayString(map, 'type') != 'text') continue;
         final text = gatewayString(map, 'text');
         if (text != null) buffer.write(text);
       }
@@ -673,7 +820,10 @@ class _GatewayMuxLink implements DshMuxLink {
           for (final event in events) <String, Object?>{'event': event},
         ],
         'hasMore': frame['hasMore'] == true,
-        'projections': cached?['projections'] ??
+        // The gateway trims session-list projections to `title` alone, so the
+        // snapshot's own projections (full values) win when present.
+        'projections': frame['projections'] ??
+            cached?['projections'] ??
             <String, Object?>{'asOfSeq': cursor, 'values': <String, Object?>{}},
         'assistantStream': frame['assistantStream'],
       },
