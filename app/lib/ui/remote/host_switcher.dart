@@ -7,6 +7,7 @@ import '../../l10n/l10n.dart';
 import '../../runtime/local_footprint.dart';
 import '../../runtime/runtime_state.dart';
 import '../../state/connection_state.dart';
+import '../../state/gateway_hosts.dart';
 import '../../state/hosts_state.dart';
 import '../common/app_sheet.dart';
 import '../common/sheet_title_bar.dart';
@@ -147,6 +148,16 @@ class HostSheet extends ConsumerWidget {
                       active: active == HostRef.relay(h.id),
                       relay: h,
                       onTap: () => pick(HostRef.relay(h.id, name: h.name)),
+                    ),
+                  // Mobile Gateway hosts: no DSH Remote account involved, so
+                  // they are listed whether or not one is signed in.
+                  for (final gw in ref.watch(gatewayHostsProvider).hosts)
+                    _HostRow(
+                      host: HostRef.gateway(gw.id, name: gw.name),
+                      title: gw.name,
+                      subtitle: '移动网关 · ${gw.url}',
+                      active: active == HostRef.gateway(gw.id),
+                      onTap: () => pick(HostRef.gateway(gw.id, name: gw.name)),
                     ),
                 ],
               ),

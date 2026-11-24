@@ -1,4 +1,4 @@
-﻿/// A [DshCarrier] backed by one Mobile Gateway WebSocket.
+/// A [DshCarrier] backed by one Mobile Gateway WebSocket.
 ///
 /// `DshCarrier` sits *below* `DshRpc`/`DshMux`, so mapping the gateway's own
 /// frame vocabulary onto DSH endpoints keeps every screen above this file
@@ -199,7 +199,7 @@ class GatewayCarrier implements DshCarrier {
 
   @override
   Future<DshMuxLink> openLink(MuxOptions options) async {
-    final link = _GatewayMuxLink(_client);
+    final link = _GatewayMuxLink(_client, _sessionCache);
     link.start(onFrame: (_) {}, onLost: (_, _) {});
     return link;
   }
@@ -253,13 +253,20 @@ class GatewayCarrier implements DshCarrier {
 /// home directory) and then forwards host-level pushes. `session/follow`
 /// subscribes to the session and forwards `event` frames as follow items.
 class _GatewayMuxLink implements DshMuxLink {
-  _GatewayMuxLink(this._client);
+  _GatewayMuxLink(this._client, this._sessions);
 
   final GatewayClient _client;
+
+  /// Session rows from the last `sessions` reply, used to build a snapshot
+  /// header when the gateway's own `session-snapshot` has not arrived yet.
+  final Map<String, Map<String, Object?>> _sessions;
   DshMuxFrameHandler? _onFrame;
   DshMuxLossHandler? _onLost;
   StreamSubscription<Map<String, Object?>>? _pushes;
   final Map<String, String> _streamSessions = <String, String>{};
+
+  /// Streams that already opened with a snapshot (a second one resyncs).
+  final Set<String> _snapshotSent = <String>{};
   bool _closed = false;
 
   @override
@@ -305,6 +312,17 @@ class _GatewayMuxLink implements DshMuxLink {
             },
           },
         });
+      case GatewayKind.sessionSnapshot:
+        // The gateway's own opening page for a subscribed session: forward it
+        // once as the follow snapshot.
+        final sessionId = gatewayString(frame, 'sessionId');
+        if (sessionId == null) return;
+        final streamId = _streamSessions.entries
+            .where((entry) => entry.value == sessionId)
+            .map((entry) => entry.key)
+            .firstOrNull;
+        if (streamId == null) return;
+        _emitSnapshot(streamId, sessionId, frame);
       case GatewayKind.sessionTitleChanged:
         final sessionId = gatewayString(frame, 'sessionId');
         final title = gatewayString(frame, 'title');
@@ -353,23 +371,82 @@ class _GatewayMuxLink implements DshMuxLink {
         return;
       }
       _streamSessions[streamId] = id;
-      unawaited(
-        _client
-            .request(
-              GatewayRequest.subscribe,
-              params: <String, Object?>{'sessionId': id},
-              expect: <String>{GatewayKind.subscribed},
-            )
-            .catchError((Object error) {
-          _emit(<String, Object?>{
-            'type': 'error',
-            'streamId': streamId,
-            'error': <String, Object?>{'code': 'gateway/subscribe-failed', 'message': '$error'},
-          });
-          throw error;
-        }),
-      );
+      unawaited(_openFollow(streamId, id));
     }
+  }
+
+  /// Subscribes, then guarantees the stream opens with a snapshot.
+  ///
+  /// The gateway pushes `session-snapshot` right after `subscribed`; a 6s
+  /// fallback asks `history` so a silent gateway cannot leave the conversation
+  /// view spinning on 「正在同步对话」, which is what `session/follow` without a
+  /// snapshot looks like (DshClient throws `follow opened without snapshot`).
+  Future<void> _openFollow(String streamId, String sessionId) async {
+    try {
+      await _client.request(
+        GatewayRequest.subscribe,
+        params: <String, Object?>{'sessionId': sessionId},
+        expect: <String>{GatewayKind.subscribed},
+      );
+    } on Object catch (error) {
+      _emit(<String, Object?>{
+        'type': 'error',
+        'streamId': streamId,
+        'error': <String, Object?>{'code': 'gateway/subscribe-failed', 'message': '$error'},
+      });
+      return;
+    }
+
+    await Future<void>.delayed(const Duration(seconds: 6));
+    if (_closed || _snapshotSent.contains(streamId)) return;
+    try {
+      final frame = await _client.request(
+        GatewayRequest.history,
+        params: <String, Object?>{'sessionId': sessionId, 'maxMessages': 80, 'view': 'conversation'},
+        timeout: const Duration(seconds: 30),
+      );
+      _emitSnapshot(streamId, sessionId, frame);
+    } on Object catch (error) {
+      _emit(<String, Object?>{
+        'type': 'error',
+        'streamId': streamId,
+        'error': <String, Object?>{'code': 'gateway/history-failed', 'message': '$error'},
+      });
+    }
+  }
+
+  /// Emits the one `snapshot` a follow stream may open with.
+  void _emitSnapshot(String streamId, String sessionId, Map<String, Object?> frame) {
+    if (!_snapshotSent.add(streamId)) return;
+    final events = GatewayClient.historyEvents(frame);
+    var cursor = -1;
+    for (final event in events) {
+      final seq = gatewayInt(event, 'seq');
+      if (seq != null && seq > cursor) cursor = seq;
+    }
+    final cached = _sessions[sessionId];
+    _emit(<String, Object?>{
+      'type': 'item',
+      'streamId': streamId,
+      'value': <String, Object?>{
+        'type': 'snapshot',
+        'header': <String, Object?>{
+          'id': sessionId,
+          'version': 4,
+          'createdAt': gatewayInt(cached ?? const <String, Object?>{}, 'updatedAt') ?? 0,
+          'isSeeded': false,
+          if (cached?['cwd'] is String) 'cwd': cached!['cwd'],
+        },
+        'cursor': cursor,
+        'records': <Object?>[
+          for (final event in events) <String, Object?>{'event': event},
+        ],
+        'hasMore': frame['hasMore'] == true,
+        'projections': cached?['projections'] ??
+            <String, Object?>{'asOfSeq': cursor, 'values': <String, Object?>{}},
+        'assistantStream': frame['assistantStream'],
+      },
+    });
   }
 
   @override
