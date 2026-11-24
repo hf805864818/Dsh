@@ -121,7 +121,15 @@ class GatewayCarrier implements DshCarrier {
           final id = gatewayString(item, 'sessionId');
           if (id != null) _sessionCache[id] = item;
         }
-        return <String, Object?>{'items': items};
+        // The gateway lists archived sessions too; DSH's own filter needs a
+        // workspace baseline this carrier does not carry, so they are dropped
+        // here instead of showing up as ordinary sessions.
+        return <String, Object?>{
+          'items': <Object?>[
+            for (final item in items)
+              if (!_archived.contains(gatewayString(item, 'sessionId'))) item,
+          ],
+        };
 
       case 'session/page':
         final request = asGatewayMap(args['request']) ?? const <String, Object?>{};
@@ -193,6 +201,11 @@ class GatewayCarrier implements DshCarrier {
           expect: <String>{GatewayKind.sessionArchived},
           timeout: _or(timeout),
         );
+        for (final id in asGatewayStrings(frame['archivedSessionIds'])) {
+          _archived.add(id);
+        }
+        final archivedId = gatewayString(args, 'sessionId');
+        if (archivedId != null) _archived.add(archivedId);
         return <String, Object?>{'archivedSessionIds': frame['archivedSessionIds'] ?? const <Object?>[]};
 
       case 'session/search':
@@ -605,13 +618,24 @@ class GatewayCarrier implements DshCarrier {
         };
 
       case 'session/modelCatalog':
-        // The gateway's `models` groups are already the shape ModelCatalog
-        // reads; `current` is the session's selection.
-        final reply = await _client.request(
-          GatewayRequest.models,
-          expect: <String>{GatewayKind.models},
-          timeout: _or(timeout),
-        );
+        // The gateway has two catalogs: with a sessionId it returns the
+        // per-session one (`groups` + `current`), without one it returns the
+        // global route list, which has neither. Prefer a session we know so the
+        // picker is populated; fall back to the global reply.
+        Map<String, Object?> reply = const <String, Object?>{};
+        for (final sessionId in <String?>[..._sessionCache.keys.take(1), null]) {
+          try {
+            reply = await _client.request(
+              GatewayRequest.models,
+              params: <String, Object?>{'sessionId': ?sessionId},
+              expect: <String>{GatewayKind.models},
+              timeout: _or(timeout),
+            );
+          } on Object {
+            continue;
+          }
+          if (asGatewayMaps(reply['groups']).isNotEmpty) break;
+        }
         final groups = asGatewayMaps(reply['groups']);
         return <String, Object?>{
           'groups': groups,
@@ -693,13 +717,16 @@ class GatewayCarrier implements DshCarrier {
 
   @override
   Future<DshMuxLink> openLink(MuxOptions options) async {
-    final link = _GatewayMuxLink(_client, _sessionCache, _pendingRequests);
+    final link = _GatewayMuxLink(_client, _sessionCache, _pendingRequests, _archived);
     link.start(onFrame: (_) {}, onLost: (_, _) {});
     return link;
   }
 
   @override
   Future<void> close() => _client.close();
+
+  /// Sessions the Host has archived; session/list drops them.
+  final Set<String> _archived = <String>{};
 
   /// Requests the Host is waiting on, keyed by the id DSH answers with (the
   /// gateway's own `rpcId`).
@@ -762,7 +789,7 @@ class GatewayCarrier implements DshCarrier {
 /// home directory) and then forwards host-level pushes. `session/follow`
 /// subscribes to the session and forwards `event` frames as follow items.
 class _GatewayMuxLink implements DshMuxLink {
-  _GatewayMuxLink(this._client, this._sessions, this._pending);
+  _GatewayMuxLink(this._client, this._sessions, this._pending, this._archived);
 
   final GatewayClient _client;
 
@@ -772,6 +799,9 @@ class _GatewayMuxLink implements DshMuxLink {
 
   /// The carrier's request registry, so incoming asks can be answered.
   final Map<String, _PendingRequest> _pending;
+
+  /// Shared with the carrier: archived session ids, hidden from `session/list`.
+  final Set<String> _archived;
 
   /// Stream id of the Host `$events` link, where asks are delivered.
   String? _eventsStreamId;
@@ -811,6 +841,13 @@ class _GatewayMuxLink implements DshMuxLink {
   void _deliver(Map<String, Object?> frame) {
     final kind = gatewayString(frame, 'kind');
     switch (kind) {
+      case GatewayKind.sessionArchives:
+        for (final id in asGatewayStrings(frame['archivedSessionIds'])) {
+          _archived.add(id);
+        }
+      case GatewayKind.sessionArchived:
+        final archivedId = gatewayString(frame, 'sessionId');
+        if (archivedId != null) _archived.add(archivedId);
       case GatewayKind.event:
         final sessionId = gatewayString(frame, 'sessionId');
         final event = asGatewayMap(frame['event']);

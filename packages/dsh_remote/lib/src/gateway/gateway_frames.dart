@@ -237,3 +237,10 @@ bool gatewayBool(Map<String, Object?> frame, String key, {bool fallback = false}
   final value = frame[key];
   return value is bool ? value : fallback;
 }
+
+/// The string members of a JSON array, ignoring anything else.
+List<String> asGatewayStrings(Object? value) => <String>[
+  if (value is List)
+    for (final entry in value)
+      if (entry is String && entry.isNotEmpty) entry,
+];
