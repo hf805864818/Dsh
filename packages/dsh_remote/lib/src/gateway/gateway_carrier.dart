@@ -992,35 +992,42 @@ class _GatewayMuxLink implements DshMuxLink {
   /// view spinning on 「正在同步对话」, which is what `session/follow` without a
   /// snapshot looks like (DshClient throws `follow opened without snapshot`).
   Future<void> _openFollow(String streamId, String sessionId) async {
+    // Ask for the page and the subscription together: the gateway's own
+    // `session-snapshot` wins when it lands first, and the history answer is
+    // already on its way instead of starting after a six second wait. That wait
+    // is what "正在同步对话" was really showing.
+    final subscribe = _client.request(
+      GatewayRequest.subscribe,
+      params: <String, Object?>{'sessionId': sessionId},
+      expect: <String>{GatewayKind.subscribed},
+    );
+    final history = _client.request(
+      GatewayRequest.history,
+      params: <String, Object?>{'sessionId': sessionId, 'maxMessages': 80, 'view': 'conversation'},
+      timeout: const Duration(seconds: 30),
+    );
+    unawaited(history.then(
+      (frame) {
+        if (_closed || _snapshotSent.contains(streamId)) return;
+        _emitSnapshot(streamId, sessionId, frame);
+      },
+      onError: (Object error) {
+        if (_closed) return;
+        _emit(<String, Object?>{
+          'type': 'error',
+          'streamId': streamId,
+          'error': <String, Object?>{'code': 'gateway/history-failed', 'message': '$error'},
+        });
+      },
+    ));
     try {
-      await _client.request(
-        GatewayRequest.subscribe,
-        params: <String, Object?>{'sessionId': sessionId},
-        expect: <String>{GatewayKind.subscribed},
-      );
+      await subscribe;
     } on Object catch (error) {
+      if (_snapshotSent.contains(streamId)) return;
       _emit(<String, Object?>{
         'type': 'error',
         'streamId': streamId,
         'error': <String, Object?>{'code': 'gateway/subscribe-failed', 'message': '$error'},
-      });
-      return;
-    }
-
-    await Future<void>.delayed(const Duration(seconds: 6));
-    if (_closed || _snapshotSent.contains(streamId)) return;
-    try {
-      final frame = await _client.request(
-        GatewayRequest.history,
-        params: <String, Object?>{'sessionId': sessionId, 'maxMessages': 80, 'view': 'conversation'},
-        timeout: const Duration(seconds: 30),
-      );
-      _emitSnapshot(streamId, sessionId, frame);
-    } on Object catch (error) {
-      _emit(<String, Object?>{
-        'type': 'error',
-        'streamId': streamId,
-        'error': <String, Object?>{'code': 'gateway/history-failed', 'message': '$error'},
       });
     }
   }
