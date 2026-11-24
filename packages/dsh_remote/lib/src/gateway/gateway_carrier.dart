@@ -25,6 +25,7 @@ import 'package:dsh_client/dsh_client.dart';
 
 import 'gateway_client.dart';
 import 'gateway_frames.dart';
+import 'gateway_mapping.dart';
 
 /// Endpoints this carrier answers.
 const Set<String> _servedEndpoints = <String>{
@@ -166,33 +167,9 @@ class GatewayCarrier implements DshCarrier {
         // DSH sends the turn as `request.content` parts (text, images, file
         // receipts) plus `mode`; the gateway's `message` wants those split out.
         final sessionId = _sessionIdOf(args) ?? gatewayString(args, 'sessionId');
-        final request = asGatewayMap(args['request']) ?? args;
-        final text = gatewayString(request, 'text') ?? _promptText(request);
-        final images = <Object?>[];
-        final files = <Object?>[];
-        final content = request['content'];
-        if (content is List) {
-          for (final part in content) {
-            final map = asGatewayMap(part);
-            if (map == null) continue;
-            switch (gatewayString(map, 'type')) {
-              case 'image':
-                images.add(map);
-              case 'file':
-                files.add(<String, Object?>{'receiptId': gatewayString(map, 'receiptId')});
-            }
-          }
-        }
         await _client.request(
           GatewayRequest.message,
-          params: <String, Object?>{
-            'sessionId': ?sessionId,
-            'text': ?text,
-            if (images.isNotEmpty) 'images': images,
-            if (files.isNotEmpty) 'files': files,
-            'mode': ?gatewayString(request, 'mode'),
-            'clientTimeZone': ?gatewayString(request, 'clientTimeZone'),
-          },
+          params: promptMessageParams(args, sessionId: sessionId),
           expect: _promptExpect(),
           timeout: _or(timeout),
         );
@@ -702,7 +679,7 @@ class GatewayCarrier implements DshCarrier {
             'rpcId': pending.rpcId,
             'sessionId': pending.sessionId,
             if (pending.approvalId != null) 'approvalId': pending.approvalId,
-            'outcome': _approvalOutcome(args['outcome']),
+            'outcome': approvalOutcome(args['outcome']),
           },
           timeout: const Duration(seconds: 20),
         );
@@ -759,16 +736,6 @@ class GatewayCarrier implements DshCarrier {
     return null;
   }
 
-  /// Maps DSH's outcome map onto the gateway's `allowed-once` / `rejected`.
-  static String _approvalOutcome(Object? value) {
-    final map = asGatewayMap(value);
-    final raw = gatewayString(map ?? const <String, Object?>{}, 'outcome') ??
-        gatewayString(map ?? const <String, Object?>{}, 'decision') ??
-        gatewayString(map ?? const <String, Object?>{}, 'value');
-    if (raw == null) return 'rejected';
-    return raw.contains('reject') || raw.contains('deny') ? 'rejected' : 'allowed-once';
-  }
-
   static Duration _or(Duration? timeout) => timeout ?? const Duration(seconds: 30);
 
   static Set<String> _promptExpect() => <String>{GatewayKind.sent, GatewayRequest.message};
@@ -786,26 +753,6 @@ class GatewayCarrier implements DshCarrier {
       if (id != null) return id;
     }
     return gatewayString(value, 'sessionId');
-  }
-
-  /// Pulls the plain text out of a DSH prompt payload.
-  static String? _promptText(Map<String, Object?> request) {
-    final direct = gatewayString(request, 'text');
-    if (direct != null) return direct;
-    // `content` is the current wire name; `parts` was the older one.
-    final parts = request['content'] ?? request['parts'];
-    if (parts is List) {
-      final buffer = StringBuffer();
-      for (final part in parts) {
-        final map = asGatewayMap(part);
-        if (map == null) continue;
-        if (gatewayString(map, 'type') != 'text') continue;
-        final text = gatewayString(map, 'text');
-        if (text != null) buffer.write(text);
-      }
-      if (buffer.isNotEmpty) return buffer.toString();
-    }
-    return null;
   }
 }
 
