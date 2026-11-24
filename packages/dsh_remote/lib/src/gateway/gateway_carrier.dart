@@ -34,6 +34,7 @@ const Set<String> _servedEndpoints = <String>{
   'session/attachment',
   'workspace/archiveSession',
   'userQuestions/answer',
+  r'$events/result',
 };
 
 /// A gateway connection presented as a `DshCarrier`.
@@ -185,12 +186,43 @@ class GatewayCarrier implements DshCarrier {
         return frame['data'] ?? frame['bytes'] ?? frame;
 
       case 'userQuestions/answer':
-        // Human-in-the-loop replies reuse the gateway's dedicated frames; the
-        // gateway keys them by the plugin's own rpcId.
-        throw const DshRemoteException(
-          'gateway/not-implemented',
-          'Answering questions over the gateway carrier is not wired yet.',
+        // `{agentId, callId, answer: {answers}}`: the gateway frames carry no
+        // callId, so the pending question for that session is the target.
+        final agentId = gatewayString(args, 'agentId') ?? gatewayString(args, 'sessionId');
+        final pending = _pendingQuestionFor(agentId);
+        if (pending == null) {
+          throw const DshRemoteException('gateway/no-pending-question', '没有等待回答的提问。');
+        }
+        final answer = asGatewayMap(args['answer']) ?? const <String, Object?>{};
+        await _client.request(
+          GatewayRequest.questionAnswer,
+          params: <String, Object?>{
+            'rpcId': pending.rpcId,
+            'sessionId': pending.sessionId,
+            'answers': answer['answers'] ?? const <Object?>[],
+          },
+          timeout: const Duration(seconds: 20),
         );
+        _pendingRequests.remove(pending.rpcId);
+        return true;
+
+      case r'$events/result':
+        // `{clientId, eventId, outcome}`: approvals are answered from their card.
+        final eventId = gatewayString(args, 'eventId');
+        final pending = eventId == null ? null : _pendingRequests[eventId];
+        if (pending == null) return null;
+        await _client.request(
+          GatewayRequest.approvalResponse,
+          params: <String, Object?>{
+            'rpcId': pending.rpcId,
+            'sessionId': pending.sessionId,
+            if (pending.approvalId != null) 'approvalId': pending.approvalId,
+            'outcome': _approvalOutcome(args['outcome']),
+          },
+          timeout: const Duration(seconds: 20),
+        );
+        _pendingRequests.remove(pending.rpcId);
+        return null;
 
       default:
         throw DshRemoteException('METHOD_NOT_ALLOWED', 'The gateway cannot serve $endpoint.');
@@ -199,13 +231,34 @@ class GatewayCarrier implements DshCarrier {
 
   @override
   Future<DshMuxLink> openLink(MuxOptions options) async {
-    final link = _GatewayMuxLink(_client, _sessionCache);
+    final link = _GatewayMuxLink(_client, _sessionCache, _pendingRequests);
     link.start(onFrame: (_) {}, onLost: (_, _) {});
     return link;
   }
 
   @override
   Future<void> close() => _client.close();
+
+  /// Requests the Host is waiting on, keyed by the id DSH answers with (the
+  /// gateway's own `rpcId`).
+  final Map<String, _PendingRequest> _pendingRequests = <String, _PendingRequest>{};
+
+  _PendingRequest? _pendingQuestionFor(String? sessionId) {
+    for (final entry in _pendingRequests.values) {
+      if (entry.question && (sessionId == null || entry.sessionId == sessionId)) return entry;
+    }
+    return null;
+  }
+
+  /// Maps DSH's outcome map onto the gateway's `allowed-once` / `rejected`.
+  static String _approvalOutcome(Object? value) {
+    final map = asGatewayMap(value);
+    final raw = gatewayString(map ?? const <String, Object?>{}, 'outcome') ??
+        gatewayString(map ?? const <String, Object?>{}, 'decision') ??
+        gatewayString(map ?? const <String, Object?>{}, 'value');
+    if (raw == null) return 'rejected';
+    return raw.contains('reject') || raw.contains('deny') ? 'rejected' : 'allowed-once';
+  }
 
   static Duration _or(Duration? timeout) => timeout ?? const Duration(seconds: 30);
 
@@ -253,13 +306,25 @@ class GatewayCarrier implements DshCarrier {
 /// home directory) and then forwards host-level pushes. `session/follow`
 /// subscribes to the session and forwards `event` frames as follow items.
 class _GatewayMuxLink implements DshMuxLink {
-  _GatewayMuxLink(this._client, this._sessions);
+  _GatewayMuxLink(this._client, this._sessions, this._pending);
 
   final GatewayClient _client;
 
   /// Session rows from the last `sessions` reply, used to build a snapshot
   /// header when the gateway's own `session-snapshot` has not arrived yet.
   final Map<String, Map<String, Object?>> _sessions;
+
+  /// The carrier's request registry, so incoming asks can be answered.
+  final Map<String, _PendingRequest> _pending;
+
+  /// Stream id of the Host `$events` link, where asks are delivered.
+  String? _eventsStreamId;
+
+  void _emitHost(Map<String, Object?> value) {
+    final streamId = _eventsStreamId;
+    if (streamId == null) return;
+    _emit(<String, Object?>{'type': 'item', 'streamId': streamId, 'value': value});
+  }
   DshMuxFrameHandler? _onFrame;
   DshMuxLossHandler? _onLost;
   StreamSubscription<Map<String, Object?>>? _pushes;
@@ -312,6 +377,48 @@ class _GatewayMuxLink implements DshMuxLink {
             },
           },
         });
+      case GatewayKind.approvalRequested:
+        final rpcId = gatewayString(frame, 'rpcId');
+        final sessionId = gatewayString(frame, 'sessionId');
+        if (rpcId == null || sessionId == null) return;
+        _pending[rpcId] = _PendingRequest(
+          rpcId: rpcId,
+          sessionId: sessionId,
+          approvalId: gatewayString(frame, 'approvalId'),
+        );
+        _emitHost(<String, Object?>{
+          'type': 'waterfall',
+          'event': 'approval/request',
+          'eventId': rpcId,
+          'agentId': sessionId,
+          'request': <String, Object?>{
+            'toolName': gatewayString(frame, 'toolName') ?? 'tool',
+            if (frame['callId'] != null) 'callId': frame['callId'],
+            if (frame['reason'] != null) 'reason': frame['reason'],
+          },
+        });
+      case GatewayKind.approvalResolved:
+        final rpcId = gatewayString(frame, 'rpcId');
+        if (rpcId == null) return;
+        _pending.remove(rpcId);
+        _emitHost(<String, Object?>{'type': 'cancel', 'eventId': rpcId});
+      case GatewayKind.questionRequested:
+        final rpcId = gatewayString(frame, 'rpcId');
+        final sessionId = gatewayString(frame, 'sessionId');
+        if (rpcId == null || sessionId == null) return;
+        _pending[rpcId] = _PendingRequest(rpcId: rpcId, sessionId: sessionId, question: true);
+        _emitHost(<String, Object?>{
+          'type': 'waterfall',
+          'event': 'user-questions/request',
+          'eventId': rpcId,
+          'agentId': sessionId,
+          'request': <String, Object?>{'questions': frame['questions'] ?? const <Object?>[]},
+        });
+      case GatewayKind.questionResolved:
+        final rpcId = gatewayString(frame, 'rpcId');
+        if (rpcId == null) return;
+        _pending.remove(rpcId);
+        _emitHost(<String, Object?>{'type': 'cancel', 'eventId': rpcId});
       case GatewayKind.sessionSnapshot:
         // The gateway's own opening page for a subscribed session: forward it
         // once as the follow snapshot.
@@ -344,6 +451,7 @@ class _GatewayMuxLink implements DshMuxLink {
   @override
   void open(String streamId, String endpoint, Map<String, Object?> payload) {
     if (endpoint == hostEventsEndpoint || endpoint == r'$events') {
+      _eventsStreamId = streamId;
       // Synthetic ready: the socket itself is the generation.
       _emit(<String, Object?>{
         'type': 'item',
@@ -479,3 +587,18 @@ extension _FirstOrNull<T> on Iterable<T> {
   }
 }
 
+
+/// A request the Host is waiting on: an approval or a user question.
+class _PendingRequest {
+  const _PendingRequest({
+    required this.rpcId,
+    required this.sessionId,
+    this.approvalId,
+    this.question = false,
+  });
+
+  final String rpcId;
+  final String sessionId;
+  final String? approvalId;
+  final bool question;
+}

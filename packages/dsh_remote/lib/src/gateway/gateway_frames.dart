@@ -47,6 +47,9 @@ abstract final class GatewayRequest {
   static const String contextUsage = 'context-usage';
   static const String commandsMenu = 'commands';
   static const String skillsMenu = 'skills';
+  static const String approvalResponse = 'approval-response';
+  static const String questionAnswer = 'question-answer';
+  static const String questionCancel = 'question-cancel';
 }
 
 /// Reply / push frame kinds the host sends.
