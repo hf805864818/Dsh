@@ -59,6 +59,12 @@ abstract final class GatewayRequest {
   static const String permission = 'permission';
   static const String tasksList = 'tasks';
   static const String goalInfo = 'goal';
+  static const String fork = 'fork';
+  static const String queueUpdate = 'queue-update';
+  static const String workspaces = 'workspaces';
+  static const String sessionCreate = 'session-create';
+  static const String directories = 'directories';
+  static const String workspaceCreate = 'workspace-create';
 }
 
 /// Reply / push frame kinds the host sends.

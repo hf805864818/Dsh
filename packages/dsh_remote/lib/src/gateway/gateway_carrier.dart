@@ -38,6 +38,10 @@ const Set<String> _servedEndpoints = <String>{
   'session/modelCatalog',
   'session/selectModel',
   'llm/listProviders',
+  'session/projections',
+  'session/fork',
+  'session/updateQueue',
+  'workspace/list',
 };
 
 /// A gateway connection presented as a `DshCarrier`.
@@ -187,6 +191,81 @@ class GatewayCarrier implements DshCarrier {
           timeout: _or(timeout),
         );
         return frame['data'] ?? frame['bytes'] ?? frame;
+
+      case 'session/projections':
+        // Four projection reads, merged. A projection the gateway refused must
+        // not fail the whole read: the caller renders what it got.
+        final projectionsRequest = asGatewayMap(args['request']) ?? args;
+        final projectionsSession = _sessionIdOf(projectionsRequest) ?? gatewayString(projectionsRequest, 'sessionId');
+        if (projectionsSession == null) {
+          throw const DshRemoteException('gateway/bad-request', 'session/projections needs a session');
+        }
+        final values = <String, Object?>{};
+        var asOfSeq = 0;
+        Future<void> take(String type, String kind, Map<String, String> keys) async {
+          try {
+            final reply = await _client.request(
+              type,
+              params: <String, Object?>{'sessionId': projectionsSession},
+              expect: <String>{kind},
+              timeout: _or(timeout),
+            );
+            final seq = gatewayInt(reply, 'asOfSeq');
+            if (seq != null && seq > asOfSeq) asOfSeq = seq;
+            for (final entry in keys.entries) {
+              final value = reply[entry.value];
+              if (value != null) values[entry.key] = value;
+            }
+          } on Object {
+            // Absent projection: leave the key out.
+          }
+        }
+
+        await Future.wait(<Future<void>>[
+          take(GatewayRequest.contextUsage, 'context-usage', <String, String>{
+            'tokenUsage': 'tokenUsage',
+            'contextPressure': 'contextPressure',
+          }),
+          take(GatewayRequest.sessionStats, 'session-stats', <String, String>{'sessionStats': 'sessionStats'}),
+          take(GatewayRequest.tasksList, 'tasks', <String, String>{'todos': 'todos'}),
+          take(GatewayRequest.goalInfo, 'goal', <String, String>{'goal': 'goal'}),
+        ]);
+        return <String, Object?>{'asOfSeq': asOfSeq, 'values': values};
+
+      case 'session/fork':
+        final forkRequest = asGatewayMap(args['request']) ?? args;
+        final reply = await _client.request(
+          GatewayRequest.fork,
+          params: <String, Object?>{
+            'sessionId': ?_sessionIdOf(forkRequest),
+            'atSeq': ?(forkRequest['atSeq'] is int ? forkRequest['atSeq'] as int : null),
+          },
+          expect: <String>{'fork'},
+          timeout: _or(timeout),
+        );
+        return <String, Object?>{'sessionId': gatewayString(reply, 'sessionId') ?? ''};
+
+      case 'session/updateQueue':
+        final queueRequest = asGatewayMap(args['request']) ?? args;
+        await _client.request(
+          GatewayRequest.queueUpdate,
+          params: <String, Object?>{
+            'sessionId': ?_sessionIdOf(queueRequest),
+            'itemId': ?gatewayString(queueRequest, 'itemId'),
+            'action': ?gatewayString(queueRequest, 'action'),
+            'text': ?gatewayString(queueRequest, 'text'),
+          },
+          timeout: _or(timeout),
+        );
+        return null;
+
+      case 'workspace/list':
+        final reply = await _client.request(
+          GatewayRequest.workspaces,
+          expect: <String>{'workspaces'},
+          timeout: _or(timeout),
+        );
+        return reply['workspaces'] ?? reply['items'] ?? reply;
 
       case 'session/modelCatalog':
         // The gateway's `models` groups are already the shape ModelCatalog
