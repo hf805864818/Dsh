@@ -1,4 +1,4 @@
-﻿import 'dart:convert';
+import 'dart:convert';
 
 import 'package:dsh_app/remote/secret_store.dart';
 import 'package:dsh_app/runtime/runtime_state.dart';
@@ -47,9 +47,6 @@ void main() {
     final c = ProviderScope.containerOf(tester.element(find.byType(MaterialApp)));
     final tile = find.byKey(const ValueKey('remote-auto-connect'));
     await tester.scrollUntilVisible(tile, 300);
-    // The host list grew (gateway rows), so scrolling by one page can leave the
-    // tile in the tree but below the fold; bring it fully into view before tapping.
-    await tester.ensureVisible(tile);
     await tester.pump();
     final toggle = find.descendant(of: tile, matching: find.byType(Switch));
     expect(tester.widget<Switch>(toggle).value, isTrue);
@@ -111,4 +108,3 @@ void main() {
     expect(find.byKey(const ValueKey('remote-auto-connect')), findsNothing);
   });
 }
-

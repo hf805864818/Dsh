@@ -55,11 +55,6 @@ void main() {
 
   Future<void> pump(WidgetTester tester, {RelayBackend? relay}) async {
     usePhoneSurface(tester);
-    // The Remote screen grew two sections; give it a taller canvas so the whole
-    // page (credit footer through SSH) is built and measurable.
-    tester.view.physicalSize = const Size(390 * 2, 3200 * 2);
-    tester.view.devicePixelRatio = 2;
-    addTearDown(tester.view.reset);
     await tester.pumpWidget(
       goldenApp(
         home: const RemoteScreen(),
@@ -230,14 +225,9 @@ void main() {
   testWidgets('the layout is that of a plain footer', (tester) async {
     await pump(tester);
     final line = lineRect(tester);
-    // Card → 8 → the line → the guide row → the section margin (24) → the next
-    // section's title.
+    // Card → 8 → the line → the section margin (24) → the next section's title.
     expect(line.top - tester.getRect(card('登录 DSH Remote')).bottom, closeTo(8, 0.01));
-    final guide = tester.getRect(find.text('DSH Go 私有 VIP 连接方式，请点击查看'));
-    expect(guide.top, greaterThan(line.bottom));
-    // The section margin is measured from the last row inside the guide, so
-    // only the order is pinned here, not an exact gap.
-    expect(tester.getRect(find.text('远程传输')).top, greaterThan(guide.bottom));
+    expect(tester.getRect(find.text('SSH 主机')).top - line.bottom, closeTo(24, 0.01));
   });
 
   testWidgets('signing in still opens the sign-in page, not the project', (tester) async {
@@ -320,6 +310,3 @@ void main() {
     semantics.dispose();
   });
 }
-
-
-

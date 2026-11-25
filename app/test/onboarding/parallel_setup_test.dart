@@ -1,4 +1,4 @@
-﻿// First run on this phone sets up while the runtime unpacks
+// First run on this phone sets up while the runtime unpacks
 // (docs/design/onboarding-parallel-setup.md): 本机 starts the unpack once and
 // moves on; 外观 and 连接 DeepSeek follow with the unpack in a capsule; done
 // early waits on its own page; a sign-in waits for the runtime; failures,
@@ -370,9 +370,6 @@ void main() {
       await frames(tester);
       expect(find.byType(RemoteScreen), findsOneWidget);
 
-      // The host list sits below the new gateway sections; scroll it into view.
-      await tester.scrollUntilVisible(find.text('电脑'), 300, scrollable: find.byType(Scrollable).first);
-      await tester.pump();
       await tester.tap(find.text('电脑'));
       await frames(tester);
       expect(find.text('home'), findsOneWidget);
@@ -455,9 +452,6 @@ void main() {
       await tester.tap(find.widgetWithText(FilledButton, '继续'));
       await frames(tester);
       expect(find.byType(RemoteScreen), findsOneWidget);
-      // The host list sits below the new gateway sections; scroll it into view.
-      await tester.scrollUntilVisible(find.text('电脑'), 300, scrollable: find.byType(Scrollable).first);
-      await tester.pump();
       await tester.tap(find.text('电脑'));
       await frames(tester);
       expect(find.text('home'), findsOneWidget);
@@ -534,5 +528,3 @@ void main() {
 
   tearDown(() => SharedPreferences.setMockInitialValues({}));
 }
-
-
