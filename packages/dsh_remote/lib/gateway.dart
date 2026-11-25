@@ -11,4 +11,5 @@ export 'src/gateway/gateway_carrier.dart';
 export 'src/gateway/gateway_client.dart';
 export 'src/gateway/gateway_frames.dart';
 export 'src/gateway/gateway_mapping.dart';
+export 'src/gateway/gateway_snapshot_cache.dart';
 export 'src/gateway/gateway_pairing.dart';

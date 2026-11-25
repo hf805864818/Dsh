@@ -26,6 +26,7 @@ import 'package:dsh_client/dsh_client.dart';
 import 'gateway_client.dart';
 import 'gateway_frames.dart';
 import 'gateway_mapping.dart';
+import 'gateway_snapshot_cache.dart';
 
 /// Endpoints this carrier answers.
 const Set<String> _servedEndpoints = <String>{
@@ -66,7 +67,13 @@ const Set<String> _servedEndpoints = <String>{
 
 /// A gateway connection presented as a `DshCarrier`.
 class GatewayCarrier implements DshCarrier {
-  GatewayCarrier(this._client, {this.deviceId, this.gatewayLabel});
+  GatewayCarrier(
+    this._client, {
+    this.deviceId,
+    this.gatewayLabel,
+    GatewaySnapshotCache? snapshots,
+    this.cacheOpeningFrames = true,
+  }) : snapshots = snapshots ?? GatewaySnapshotCache();
 
   final GatewayClient _client;
 
@@ -75,6 +82,13 @@ class GatewayCarrier implements DshCarrier {
 
   /// Display name for diagnostics.
   final String? gatewayLabel;
+
+  /// Last follow snapshot per session, so a conversation paints before the
+  /// Host answers. See [_GatewayMuxLink].
+  final GatewaySnapshotCache snapshots;
+
+  /// Whether the cached frame may open a follow stream.
+  final bool cacheOpeningFrames;
 
   /// Cached `sessions` reply, so `session/projections` can be answered without
   /// another round trip.
@@ -721,7 +735,8 @@ class GatewayCarrier implements DshCarrier {
 
   @override
   Future<DshMuxLink> openLink(MuxOptions options) async {
-    final link = _GatewayMuxLink(_client, _sessionCache, _pendingRequests, _archived);
+    final link = _GatewayMuxLink(_client, _sessionCache, _pendingRequests, _archived,
+        snapshots: snapshots, cacheOpeningFrames: cacheOpeningFrames);
     link.start(onFrame: (_) {}, onLost: (_, _) {});
     return link;
   }
@@ -793,7 +808,8 @@ class GatewayCarrier implements DshCarrier {
 /// home directory) and then forwards host-level pushes. `session/follow`
 /// subscribes to the session and forwards `event` frames as follow items.
 class _GatewayMuxLink implements DshMuxLink {
-  _GatewayMuxLink(this._client, this._sessions, this._pending, this._archived);
+  _GatewayMuxLink(this._client, this._sessions, this._pending, this._archived,
+      {required this.snapshots, required this.cacheOpeningFrames});
 
   final GatewayClient _client;
 
@@ -806,6 +822,20 @@ class _GatewayMuxLink implements DshMuxLink {
 
   /// Shared with the carrier: archived session ids, hidden from `session/list`.
   final Set<String> _archived;
+
+  /// Last follow snapshot per session, used to open a stream with content.
+  final GatewaySnapshotCache snapshots;
+
+  /// Whether a cached frame may stand in as the opening snapshot.
+  final bool cacheOpeningFrames;
+
+  /// Cursor handed over from the cache, per stream; the live page is then
+  /// merged on top as plain events instead of a second snapshot.
+  final Map<String, int> _cachedCursor = <String, int>{};
+
+  /// When a session last opened from its cache. A resync right after that is
+  /// answered with the live page, so a stale cache cannot loop.
+  final Map<String, DateTime> _cachedAt = <String, DateTime>{};
 
   /// Stream id of the Host `$events` link, where asks are delivered.
   String? _eventsStreamId;
@@ -992,6 +1022,12 @@ class _GatewayMuxLink implements DshMuxLink {
   /// view spinning on 「正在同步对话」, which is what `session/follow` without a
   /// snapshot looks like (DshClient throws `follow opened without snapshot`).
   Future<void> _openFollow(String streamId, String sessionId) async {
+    // Open with the last frame this session had, when there is one: the screen
+    // paints immediately and the live page is merged on top by `seq`. A resync
+    // that follows a cache opening is answered with the live page instead, so a
+    // stale file cannot put the stream in a loop.
+    final servedCache = await _serveCachedOpening(streamId, sessionId);
+
     // Ask for the page and the subscription together: the gateway's own
     // `session-snapshot` wins when it lands first, and the history answer is
     // already on its way instead of starting after a six second wait. That wait
@@ -1008,7 +1044,11 @@ class _GatewayMuxLink implements DshMuxLink {
     );
     unawaited(history.then(
       (frame) {
-        if (_closed || _snapshotSent.contains(streamId)) return;
+        if (_closed) return;
+        if (_snapshotSent.contains(streamId)) {
+          if (servedCache) _mergeAfterCached(streamId, sessionId, frame);
+          return;
+        }
         _emitSnapshot(streamId, sessionId, frame);
       },
       onError: (Object error) {
@@ -1032,9 +1072,41 @@ class _GatewayMuxLink implements DshMuxLink {
     }
   }
 
+  /// Opens [streamId] with the session's cached frame; true when it did.
+  Future<bool> _serveCachedOpening(String streamId, String sessionId) async {
+    if (!cacheOpeningFrames || _snapshotSent.contains(streamId)) return false;
+    final last = _cachedAt[sessionId];
+    if (last != null && DateTime.now().difference(last) < const Duration(seconds: 90)) {
+      // The cache was just used for this session; a resync must get the live
+      // page, not the same stale frame again.
+      return false;
+    }
+    final cached = await snapshots.read(sessionId);
+    if (cached == null || _closed || _snapshotSent.contains(streamId)) return false;
+    _cachedCursor[streamId] = cached.cursor;
+    _cachedAt[sessionId] = DateTime.now();
+    _emitSnapshot(streamId, sessionId, cached.frame, persist: false);
+    return true;
+  }
+
+  /// Hands the live page's newer events over as plain events, since a second
+  /// snapshot in one stream is a protocol error.
+  void _mergeAfterCached(String streamId, String sessionId, Map<String, Object?> frame) {
+    final from = _cachedCursor[streamId] ?? -1;
+    final events = GatewayClient.historyEvents(frame);
+    for (final event in events) {
+      final seq = gatewayInt(event, 'seq');
+      if (seq == null || seq <= from) continue;
+      _emitEvent(streamId, <String, Object?>{'sessionId': sessionId, 'event': event, 'seq': seq});
+    }
+  }
+
+
   /// Emits the one `snapshot` a follow stream may open with.
-  void _emitSnapshot(String streamId, String sessionId, Map<String, Object?> frame) {
+  void _emitSnapshot(String streamId, String sessionId, Map<String, Object?> frame,
+      {bool persist = true}) {
     if (!_snapshotSent.add(streamId)) return;
+    if (persist) unawaited(snapshots.write(sessionId, frame));
     final events = GatewayClient.historyEvents(frame);
     // The frame's own `cursor` is the Host log position the page was cut at;
     // taking the page's last seq instead loses events the page trimmed away and
