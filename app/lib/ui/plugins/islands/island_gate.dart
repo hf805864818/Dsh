@@ -45,6 +45,7 @@ bool islandHostAllowed(
   HostKind.relay => false,
   HostKind.ssh => true,
   HostKind.local => override || (reported == true && probed == RouteGuard.present),
+  HostKind.gateway => islandHostAllowed(HostKind.relay),
 };
 
 /// The route that answers the probe: the bridge's own inventory, which the
@@ -143,6 +144,8 @@ final islandHostUrlProvider = Provider.autoDispose.family<Uri?, HostRef>((ref, h
       if (port == null || token == null) return null;
       return islandLaunchUri('http://127.0.0.1:$port', token);
     case HostKind.relay:
+      return null;
+    case HostKind.gateway:
       return null;
   }
 });

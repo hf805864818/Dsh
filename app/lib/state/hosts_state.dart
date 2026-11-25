@@ -24,8 +24,8 @@ export '../remote/ssh/ssh_transport.dart' show PresentedHostKey;
 export '../remote/relay/relay_backend.dart' show RelayHost, RelayTrust, RelayUser;
 export '../remote/ssh/ssh_host_config.dart';
 
-/// The three kinds of DSH host the app can talk to.
-enum HostKind { local, ssh, relay }
+/// The kinds of DSH host the app can talk to.
+enum HostKind { local, ssh, relay, gateway }
 
 /// Identifies a host: the on-device engine, a saved SSH host, or a relay
 /// (ds-harness-remote) device. Equality is by kind + id; [name] is only a
@@ -38,6 +38,9 @@ class HostRef {
   const HostRef.ssh(String id) : this._(HostKind.ssh, id);
 
   const HostRef.relay(String id, {String? name}) : this._(HostKind.relay, id, name);
+
+  /// A paired Mobile Gateway (dsh-plugin-mobile-gateway → /ws/mobile).
+  const HostRef.gateway(String id, {String? name}) : this._(HostKind.gateway, id, name);
 
   final HostKind kind;
   final String id;
@@ -58,6 +61,7 @@ class HostRef {
       return switch (map['kind']) {
         'ssh' => HostRef.ssh(id),
         'relay' => HostRef.relay(id, name: name is String ? name : null),
+        'gateway' => HostRef.gateway(id, name: name is String ? name : null),
         _ => local,
       };
     } catch (_) {
@@ -80,6 +84,7 @@ String hostLabel(HostKind kind, String? name) => switch (kind) {
   HostKind.local => appL10n.commonThisPhone,
   HostKind.ssh => '${_short(name ?? appL10n.stateSshHost)} · SSH',
   HostKind.relay => appL10n.stateHostRemoteLabel(_short(name ?? appL10n.commonRemoteHost)),
+  HostKind.gateway => appL10n.stateHostRemoteLabel(_short(name ?? appL10n.commonRemoteHost)),
 };
 
 String _short(String name) {
