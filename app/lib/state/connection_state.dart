@@ -5,7 +5,6 @@ import 'package:dsh_client/dsh_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../l10n/l10n.dart';
-import '../remote/gateway/gateway_host_link.dart';
 import '../remote/link_status.dart';
 import '../remote/network_watch.dart';
 import '../remote/relay/relay_backend.dart';
@@ -15,7 +14,7 @@ import '../runtime/runtime_bridge.dart';
 import '../runtime/container_paths.dart';
 import 'workspaces_state.dart';
 import '../runtime/runtime_state.dart';
-import 'gateway_hosts.dart';
+import '../usage/usage_stats.dart';
 import 'hosts_state.dart';
 import 'permission_default_repair.dart';
 import 'provider_backend.dart';
@@ -73,7 +72,16 @@ class LocalConnectionController extends AsyncNotifier<HostConnection?> {
     // Riverpod's own retries give up after a while; resume and network
     // changes try a failed connect again.
     final kicks = r.read(networkKicksProvider).listen((_) {
-      if (r.mounted && state.hasError && !state.isLoading) r.invalidateSelf();
+      if (!r.mounted) return;
+      final mux = state.value?.client.mux;
+      if (state.hasError && !state.isLoading) {
+        r.invalidateSelf();
+      } else if (mux?.state == DshConnectionState.reconnecting) {
+        // Back on screen (after a phone task, say) while the link waits out a
+        // backoff of up to 10 s: try now, on the same client, so the chat and
+        // her room just catch up instead of sitting on 「重新连接中」.
+        mux!.reconnect();
+      }
     });
     r.onDispose(() => unawaited(kicks.cancel()));
     final endpoint = r.watch(
@@ -208,22 +216,9 @@ final hostLinkProvider = Provider.autoDispose.family<HostLink?, HostRef>((ref, h
       ref.listen(hostsProvider.select((s) => s.sshById(host.id)), (_, next) {
         if (next != null && next.connectionKey == link.config.connectionKey) link.updateConfig(next);
       });
+      _observeRemoteLink(ref, link, host.kind);
       ref.onDispose(() => unawaited(link.close()));
       return link;
-    case HostKind.gateway:
-      final gatewayConfig = ref.watch(gatewayHostsProvider.select((s) => s.byId(host.id)));
-      if (gatewayConfig == null) return null;
-      final gatewaySecrets = ref.read(secretStoreProvider);
-      final gatewayLink = GatewayHostLink(
-        config: gatewayConfig,
-        loadToken: () => gatewaySecrets.read(gatewayConfig.secretKey),
-        kicks: ref.read(networkKicksProvider),
-      );
-      ref.listen(gatewayHostsProvider.select((s) => s.byId(host.id)), (_, next) {
-        if (next != null) gatewayLink.updateConfig(next);
-      });
-      ref.onDispose(() => unawaited(gatewayLink.close()));
-      return gatewayLink;
     case HostKind.relay:
       final backend = ref.watch(relayBackendProvider);
       final link = RelayHostLink(
@@ -240,6 +235,7 @@ final hostLinkProvider = Provider.autoDispose.family<HostLink?, HostRef>((ref, h
         },
         kicks: ref.read(networkKicksProvider),
       );
+      _observeRemoteLink(ref, link, host.kind);
       final statuses = link.statuses.listen((status) {
         if (status.phase == HostLinkPhase.failed && status.error?.kind == HostLinkErrorKind.notLoggedIn) {
           unawaited(ref.read(relayAccountProvider.notifier).recheck());
@@ -252,6 +248,41 @@ final hostLinkProvider = Provider.autoDispose.family<HostLink?, HostRef>((ref, h
       return link;
   }
 });
+
+// One connection episode includes its backoff and retries. A successful
+// application handshake closes it; native reconnects start a new episode.
+void _observeRemoteLink(Ref ref, HostLink link, HostKind kind) {
+  var reachedReady = false;
+  void Function(UsageOutcome, {UsageOperation? actual})? settle;
+  final sub = link.statuses.listen((status) {
+    switch (status.phase) {
+      case HostLinkPhase.connecting:
+      case HostLinkPhase.reconnecting:
+        settle ??= ref.read(usageStatsProvider.notifier).beginOperation(switch ((kind, reachedReady)) {
+          (HostKind.ssh, false) => UsageOperation.sshInitial,
+          (HostKind.ssh, true) => UsageOperation.sshReconnect,
+          (_, false) => UsageOperation.relayInitial,
+          (_, true) => UsageOperation.relayReconnect,
+        });
+      case HostLinkPhase.connected:
+        reachedReady = true;
+        settle?.call(UsageOutcome.ready);
+        settle = null;
+      case HostLinkPhase.failed:
+        settle?.call(
+          status.error?.kind == HostLinkErrorKind.hostKeyRejected ? UsageOutcome.cancelled : UsageOutcome.failed,
+        );
+        settle = null;
+      case HostLinkPhase.idle:
+        settle?.call(UsageOutcome.unknown);
+        settle = null;
+    }
+  });
+  ref.onDispose(() {
+    settle?.call(UsageOutcome.cancelled);
+    unawaited(sub.cancel());
+  });
+}
 
 /// Status of a host's link for the UI (idle for 本机).
 final hostLinkStatusProvider = StreamProvider.autoDispose.family<HostLinkStatus, HostRef>((ref, host) async* {
@@ -270,7 +301,6 @@ final hostNameProvider = Provider.autoDispose.family<String?, HostRef>((ref, hos
     HostKind.local => appL10n.commonThisPhone,
     HostKind.ssh => ref.watch(hostsProvider.select((s) => s.sshById(host.id)?.name)),
     HostKind.relay => ref.watch(relayAccountProvider.select((a) => a.value?.hostById(host.id)?.name)) ?? host.name,
-    HostKind.gateway => ref.watch(gatewayHostsProvider.select((s) => s.byId(host.id)?.name)) ?? host.name,
   };
 });
 
@@ -570,7 +600,6 @@ AsyncValue<HostConnection?> _connectionForHost(Ref ref, HostRef host) {
       if (!loaded) return const AsyncLoading();
       return ref.watch(remoteConnectionProvider(host));
     case HostKind.relay:
-    case HostKind.gateway:
       return ref.watch(remoteConnectionProvider(host));
   }
 }
