@@ -915,6 +915,23 @@ class _GatewayMuxLink implements DshMuxLink {
         }
         _emitEvent(streamId, frame);
         _emitSessionActivity(sessionId, gatewayInt(frame, 'time'));
+      case GatewayKind.assistantStream:
+        // The gateway streams the assistant's reply as `assistant-stream`
+        // frames (start/chunk/end with attemptId and revision). Without them
+        // the conversation only shows the final durable message, with no
+        // live text and a long wait until the turn commits.
+        final streamSession = gatewayString(frame, 'sessionId');
+        if (streamSession == null) return;
+        final streamId = _streamSessions.entries
+            .where((entry) => entry.value == streamSession)
+            .map((entry) => entry.key)
+            .firstOrNull;
+        if (streamId == null) return;
+        if (!_snapshotSent.contains(streamId)) {
+          (_earlyEvents[streamId] ??= <Map<String, Object?>>[]).add(frame);
+          return;
+        }
+        _emitAssistantStream(streamId, frame);
       case GatewayKind.approvalRequested:
         final rpcId = gatewayString(frame, 'rpcId');
         final sessionId = gatewayString(frame, 'sessionId');
@@ -1145,11 +1162,17 @@ class _GatewayMuxLink implements DshMuxLink {
         'assistantStream': frame['assistantStream'],
       },
     });
-    // Events that raced ahead of the snapshot are handed over now, in order.
+    // Events and stream frames that raced ahead of the snapshot are handed
+    // over now, in order. They are dispatched by kind because both can be
+    // sitting in the same buffer.
     final queued = _earlyEvents.remove(streamId);
     if (queued != null) {
-      for (final event in queued) {
-        _emitEvent(streamId, event);
+      for (final held in queued) {
+        if (gatewayString(held, 'kind') == GatewayKind.assistantStream) {
+          _emitAssistantStream(streamId, held);
+        } else {
+          _emitEvent(streamId, held);
+        }
       }
     }
   }
@@ -1158,20 +1181,99 @@ class _GatewayMuxLink implements DshMuxLink {
   void _emitEvent(String streamId, Map<String, Object?> frame) {
     final event = asGatewayMap(frame['event']);
     if (event == null) return;
+    final type = gatewayString(event, 'type') ?? 'unknown';
+    final seq = gatewayInt(frame, 'seq') ?? gatewayInt(event, 'seq') ?? 0;
+    final time = gatewayInt(frame, 'time') ?? gatewayInt(event, 'time') ?? 0;
+
+    // The gateway puts a user message and an assistant reply as flat fields
+    // (`text`, `images`, `toolCalls`); DshClient reads them back through
+    // `Message.fromJson`, which wants `content` parts. Convert, or the
+    // conversation renders empty even though the event arrived.
+    final data = switch (type) {
+      'user/message' => <String, Object?>{
+        'id': gatewayString(asGatewayMap(event['raw']) ?? const <String, Object?>{}, 'id') ?? '',
+        'role': 'user',
+        'content': _messageContent(
+          text: gatewayString(event, 'text'),
+          images: asGatewayMaps(event['images']),
+          files: asGatewayMaps(event['files']),
+        ),
+        'source': <String, Object?>{
+          'kind': gatewayString(event, 'source') ?? 'user',
+          if (gatewayString(event, 'requestId') != null)
+            'requestId': gatewayString(event, 'requestId'),
+        },
+      },
+      'assistant/message' => <String, Object?>{
+        'turn': gatewayInt(event, 'turn') ?? 0,
+        'step': gatewayInt(event, 'step') ?? 0,
+        'message': <String, Object?>{
+          'role': 'assistant',
+          'content': _messageContent(
+            text: gatewayString(event, 'text'),
+            reasoning: gatewayString(event, 'reasoning'),
+            toolCalls: asGatewayMaps(event['toolCalls']),
+            images: asGatewayMaps(event['images']),
+          ),
+        },
+        'usage': event['usage'],
+        if (event['interrupted'] == true) 'interrupted': true,
+      },
+      _ => <String, Object?>{
+        for (final entry in event.entries)
+          if (entry.key != 'type') entry.key: entry.value,
+      },
+    };
+
     _emit(<String, Object?>{
       'type': 'item',
       'streamId': streamId,
       'value': <String, Object?>{
         'type': 'event',
         'event': <String, Object?>{
-          'type': gatewayString(event, 'type') ?? 'unknown',
-          'seq': gatewayInt(frame, 'seq') ?? gatewayInt(event, 'seq') ?? 0,
-          'time': gatewayInt(frame, 'time') ?? gatewayInt(event, 'time') ?? 0,
-          'data': <String, Object?>{
-            for (final entry in event.entries)
-              if (entry.key != 'type') entry.key: entry.value,
-          },
+          'type': type,
+          'seq': seq,
+          'time': time,
+          'data': data,
         },
+      },
+    });
+  }
+
+  /// Builds a `Message.content` block list from the gateway's flat fields.
+  List<Object?> _messageContent({
+    String? text,
+    String? reasoning,
+    List<Map<String, Object?>> toolCalls = const [],
+    List<Map<String, Object?>> images = const [],
+    List<Map<String, Object?>> files = const [],
+  }) =>
+      <Object?>[
+        if (reasoning != null && reasoning.isNotEmpty)
+          <String, Object?>{'type': 'reasoning', 'text': reasoning},
+        if (text != null && text.isNotEmpty)
+          <String, Object?>{'type': 'text', 'text': text},
+        for (final call in toolCalls)
+          <String, Object?>{
+            'type': 'tool-call',
+            'id': gatewayString(call, 'id') ?? '',
+            'name': gatewayString(call, 'name') ?? '',
+            'arguments': gatewayString(call, 'arguments') ?? '',
+          },
+        for (final image in images)
+          <String, Object?>{'type': 'image', 'attachment': image},
+        for (final file in files)
+          <String, Object?>{'type': 'file', 'attachment': file},
+      ];
+
+  /// Forwards one `assistant-stream` frame as a follow item.
+  void _emitAssistantStream(String streamId, Map<String, Object?> frame) {
+    _emit(<String, Object?>{
+      'type': 'item',
+      'streamId': streamId,
+      'value': <String, Object?>{
+        'type': 'assistant-stream',
+        'frame': frame['frame'],
       },
     });
   }

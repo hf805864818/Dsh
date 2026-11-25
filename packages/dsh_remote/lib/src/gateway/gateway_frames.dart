@@ -74,6 +74,7 @@ abstract final class GatewayRequest {
   static const String fileDownloadRead = 'file-download-read';
   static const String fileDownloadCancel = 'file-download-cancel';
   static const String scheduleCatalog = 'schedule-catalog';
+  static const String assistantStream = 'assistant-stream';
   static const String speechCatalog = 'speech-catalog';
   static const String speechTranscribe = 'speech-transcribe';
   static const String speechConfigure = 'speech-configure';
@@ -115,6 +116,7 @@ abstract final class GatewayKind {
   static const String fileList = 'file-list';
   static const String fileResolved = 'file-resolved';
   static const String scheduleCatalog = 'schedule-catalog';
+  static const String assistantStream = 'assistant-stream';
   static const String speechCatalog = 'speech-catalog';
   static const String speechTranscribe = 'speech-transcribe';
   static const String speechConfigure = 'speech-configure';
