@@ -282,7 +282,7 @@ class _PrivilegeSectionState extends ConsumerState<_PrivilegeSection> {
           InfoRow(
             label: 'dpkg',
             value: probe.bootstrap.isEmpty
-                ? '未找到（/var/jb 与 /usr/bin 都没有 dpkg）'
+                ? '未找到（rootful /usr/bin、rootless /var/jb、Roothide .jbroot 都没有）'
                 : probe.bootstrap.join('\n'),
             mono: true,
           ),

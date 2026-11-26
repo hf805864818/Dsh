@@ -194,15 +194,57 @@ private enum PrivilegeProbe {
     "/var/jb",
   ]
 
-  /// Where a jailbreak bootstrap would keep dpkg: rootless first, then rootful.
-  /// Reported separately from `sandboxed`, because a device can be readable
-  /// outside its container and still have no package manager installed.
+  /// Where a jailbreak bootstrap would keep dpkg. Reported separately from
+  /// `sandboxed`, because a device can be readable outside its container and
+  /// still have no package manager at all.
+  ///
+  /// Three layouts exist and only the first two have fixed paths:
+  ///   rootful  (unc0ver, checkra1n)      /usr/bin/dpkg
+  ///   rootless (Dopamine, palera1n)      /var/jb/usr/bin/dpkg -> /private/preboot/...
+  ///   randomised (Roothide / Relaxin)    .jbroot-<hash>/usr/bin/dpkg, no fixed name
+  /// So the fixed list is only a fast path; `discovered()` looks for the hash.
   private static let packageManagers = [
     "/var/jb/usr/bin/dpkg",
     "/usr/bin/dpkg",
     "/bin/dpkg",
     "/var/jb",
   ]
+
+  /// Directories a randomised bootstrap can sit in, and how deep to look.
+  private static let jbrootHomes = [
+    "/var/containers/Bundle/Application",
+    "/var/mobile/Containers/Data/Application",
+    "/private/preboot",
+  ]
+
+  private static func exists(_ path: String) -> Bool {
+    var info = stat()
+    return stat(path, &info) == 0
+  }
+
+  /// Finds `usr/bin/dpkg` inside a randomised `.jbroot*` (or Dopamine's
+  /// `jb-*/procursus`) directory. Bounded on purpose: this runs from a settings
+  /// screen, not a filesystem crawler.
+  private static func discovered() -> [String] {
+    var found: [String] = []
+    let manager = FileManager.default
+    for home in jbrootHomes {
+      guard let entries = try? manager.contentsOfDirectory(atPath: home) else { continue }
+      for entry in entries.prefix(64) {
+        guard entry.hasPrefix(".jbroot") || entry.hasPrefix("jb-") else { continue }
+        let root = "\(home)/\(entry)"
+        let direct = "\(root)/usr/bin/dpkg"
+        if exists(direct) {
+          found.append(direct)
+          continue
+        }
+        // Dopamine keeps one more level: jb-<hash>/procursus/usr/bin/dpkg
+        let nested = "\(root)/procursus/usr/bin/dpkg"
+        if exists(nested) { found.append(nested) }
+      }
+    }
+    return found
+  }
 
   static func snapshot() -> [String: Any] {
     var readable: [String] = []
@@ -217,11 +259,8 @@ private enum PrivilegeProbe {
     }
     // A build without the entitlement fails every candidate with EPERM.
     let sandboxed = readable.isEmpty
-    var bootstrap: [String] = []
-    for path in packageManagers {
-      var info = stat()
-      if stat(path, &info) == 0 { bootstrap.append(path) }
-    }
+    var bootstrap = packageManagers.filter(exists)
+    for path in discovered() where !bootstrap.contains(path) { bootstrap.append(path) }
     return [
       "sandboxed": sandboxed,
       "readable": readable,
