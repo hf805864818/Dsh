@@ -741,14 +741,12 @@ final class EngineChannel: NSObject, FlutterStreamHandler {
   /// behind a stop and one repeated by the lost-server restart.
   /// Whether the guest-side host mount may be attempted at all.
   ///
-  /// Off on purpose. On the devices this shipped to, setting the intent and
-  /// starting the engine hung the start: `dsh_guest_set_host_mount` returned, and
-  /// then the mount inside `dsh_guest_start_with_permissions` never came back, so
-  /// the app sat at "启动中" until it was killed. A hang is worse than a refusal —
-  /// it hides the error — so the mount path is parked until it can be tested
-  /// without wedging the engine. Host file access is being built natively instead
-  /// (see the HostBridge plan), which needs no guest mount.
-  private static let privilegeMountAvailable = false
+  /// On while the mount has a deadline. It used to run inline and never returned
+  /// on the device, which is why it was parked; the C side now mounts on its own
+  /// thread with a five second deadline and the start continues without `/host`
+  /// when that deadline passes, so the worst case is a staged failure instead of
+  /// a frozen app.
+  private static let privilegeMountAvailable = true
 
   private var privilegeOnStart = false
   private var initialized = false

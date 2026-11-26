@@ -223,19 +223,79 @@ static char *pack(const char *const *values, size_t count, int env) {
   }
   return result;
 }
-// Opens the host root and mounts it at /host. Caller holds no lock; `current`
-// must already be the supervisor task, which the start path guarantees.
-static int mount_host_root(void) {
-  int fd = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-  if (fd < 0) return errno == EACCES ? EACCES : EIO;
+// The host directory exposed to the guest. `/var/mobile` holds Documents, Media
+// and the app containers — the part that actually matters — and it is far
+// smaller to resolve than `/`, which is the whole device.
+#define DSH_HOST_ROOT "/var/mobile"
+
+// Mount work runs on its own thread with a deadline.
+//
+// Mounting used to run inline in the start path, and on the device it never came
+// back: the engine sat at 启动中 until the app was killed. A hang here must cost a
+// log line, not the whole launch, so the mount gets a deadline and the start
+// continues without it when the deadline passes.
+struct host_mount_job {
+  int done;
+  int result;
+  pthread_mutex_t lock;
+  pthread_cond_t ready;
+};
+static void host_mount_finish(struct host_mount_job *job, int result) {
+  pthread_mutex_lock(&job->lock);
+  job->result = result;
+  job->done = 1;
+  pthread_cond_broadcast(&job->ready);
+  pthread_mutex_unlock(&job->lock);
+}
+static void *host_mount_thread(void *argument) {
+  struct host_mount_job *job = argument;
+  int code;
+  int fd = open(DSH_HOST_ROOT, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (fd < 0) {
+    code = errno == EACCES ? EACCES : EIO;
+    host_mount_finish(job, code);
+    return NULL;
+  }
   dsh_root *root = dsh_root_new_workspace(fd, false);
   close(fd);
-  if (!root) return ENOMEM;
+  if (!root) {
+    host_mount_finish(job, ENOMEM);
+    return NULL;
+  }
   current = supervisor;
-  int e = host_error(dsh_bound_mount("/host", root, 0, 0));
-  if (e) dsh_root_free(root);
-  else host_mounted = 1;
-  return e;
+  int mounted = dsh_bound_mount("/host", root, 0, 0);
+  if (mounted) dsh_root_free(root);
+  host_mount_finish(job, host_error(mounted));
+  return NULL;
+}
+// Opens DSH_HOST_ROOT and mounts it at /host, waiting at most `seconds`.
+// Returns 0 on success, ETIMEDOUT when the mount did not answer in time (the
+// thread is left to finish on its own), otherwise the failing errno.
+static int mount_host_root(int seconds) {
+  struct host_mount_job job = {0, 0};
+  pthread_mutex_init(&job.lock, NULL);
+  pthread_cond_init(&job.ready, NULL);
+  pthread_t thread;
+  if (pthread_create(&thread, NULL, host_mount_thread, &job) != 0) {
+    pthread_cond_destroy(&job.ready);
+    pthread_mutex_destroy(&job.lock);
+    return EIO;
+  }
+  struct timespec deadline;
+  clock_gettime(CLOCK_REALTIME, &deadline);
+  deadline.tv_sec += seconds;
+  pthread_mutex_lock(&job.lock);
+  while (!job.done) {
+    if (pthread_cond_timedwait(&job.ready, &job.lock, &deadline) == ETIMEDOUT) break;
+  }
+  int done = job.done;
+  int result = job.result;
+  pthread_mutex_unlock(&job.lock);
+  pthread_cond_destroy(&job.ready);
+  pthread_mutex_destroy(&job.lock);
+  if (!done) return ETIMEDOUT;
+  if (!result) host_mounted = 1;
+  return result;
 }
 // Holds mounts_lock. Returns 0 once /host is gone (or was never there).
 static int unmount_host_root(void) {
@@ -245,7 +305,8 @@ static int unmount_host_root(void) {
   if (!e) host_mounted = 0;
   unlock(&mounts_lock);
   return host_error(e);
-}static int unmount_job(void) {
+}
+static int unmount_job(void) {
   int e = 0;
   lock(&mounts_lock);
   if (temp_mounted) {
@@ -341,7 +402,13 @@ int dsh_guest_start_with_permissions(const struct dsh_guest_request *request,
   }
   // Full-permission sessions: the app asked for the host root, so expose it.
   // Failure is reported, never swallowed: the caller's start fails.
-  if (!e && host_mount_requested && !host_mounted) e = mount_host_root();
+  // A hang must not cost the launch: on timeout the start continues without the
+  // mount and the caller sees a staged failure it can show.
+  if (!e && host_mount_requested && !host_mounted) {
+    int mounted = mount_host_root(5);
+    if (mounted != 0 && mounted != ETIMEDOUT) e = mounted;
+    else if (mounted == ETIMEDOUT) host_mount_requested = 0;
+  }
   if (!e) e = host_error(become_new_init_child());
   if (!e) {
     task = current;
