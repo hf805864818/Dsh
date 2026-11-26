@@ -165,6 +165,20 @@ class PrivilegeController extends Notifier<PrivilegeView> {
       return false;
     }
 
+    // Ask the host whether this build can mount at all. A build that cannot must
+    // say so here rather than stopping the engine first: on the devices this
+    // shipped to, the mount hung the start and left the app frozen.
+    final support = await _methods.invokeMapMethod<String, Object?>('privilegeSupport');
+    if (support?['mount'] != true) {
+      _fullAccessSessionId = null;
+      state = state.copyWith(
+        phase: PrivilegePhase.failed,
+        failureStage: 'mount_disabled',
+        message: '当前构建已停用宿主挂载（它会卡住引擎启动），宿主文件访问改用原生直通，正在开发中。',
+      );
+      return false;
+    }
+
     // No sandbox to lift: the preset alone switches the conversation.
     if (!_hosted) {
       _fullAccessSessionId = sessionId;

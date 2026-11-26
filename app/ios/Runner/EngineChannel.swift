@@ -739,6 +739,17 @@ final class EngineChannel: NSObject, FlutterStreamHandler {
   /// A `start` asked for `privilege: "full"`. The mount itself lives in
   /// `PrivilegeBridge`; this only records the request, including one queued
   /// behind a stop and one repeated by the lost-server restart.
+  /// Whether the guest-side host mount may be attempted at all.
+  ///
+  /// Off on purpose. On the devices this shipped to, setting the intent and
+  /// starting the engine hung the start: `dsh_guest_set_host_mount` returned, and
+  /// then the mount inside `dsh_guest_start_with_permissions` never came back, so
+  /// the app sat at "启动中" until it was killed. A hang is worse than a refusal —
+  /// it hides the error — so the mount path is parked until it can be tested
+  /// without wedging the engine. Host file access is being built natively instead
+  /// (see the HostBridge plan), which needs no guest mount.
+  private static let privilegeMountAvailable = false
+
   private var privilegeOnStart = false
   private var initialized = false
 
@@ -917,6 +928,11 @@ final class EngineChannel: NSObject, FlutterStreamHandler {
     // container; the only honest answer is to try. No engine state is touched,
     // so this answers before the queue.
     if call.method == "privilegeProbe" { return result(PrivilegeProbe.snapshot()) }
+    // What this build can actually do, before the UI offers it. Cheap and
+    // static, so it answers on the platform thread without touching the engine.
+    if call.method == "privilegeSupport" {
+      return result(["mount": Self.privilegeMountAvailable])
+    }
     if call.method == "setBackgroundProtection" {
       for key in ["audioEnabled", "locationEnabled"] where arguments[key] != nil {
         guard arguments[key] is Bool else {
@@ -964,6 +980,15 @@ final class EngineChannel: NSObject, FlutterStreamHandler {
         // Full permission owns the guest mount table, so it is granted and
         // revoked only between engine generations, never under a live one.
         case "privilegeEnable":
+          // Refused before the engine is touched while the mount is parked: an
+          // attempt that cannot work must not cost the user their running engine.
+          guard Self.privilegeMountAvailable else {
+            reply(FlutterError(
+              code: "privilege_mount_disabled",
+              message: "当前构建已停用宿主挂载（它会卡住引擎启动），宿主文件访问改用原生直通，正在开发中。",
+              details: ["stage": "mount_disabled", "errno": 0, "detail": "privilegeMountAvailable=false"] as [String: Any]))
+            return
+          }
           if let running = engineGeneration() {
             reply(FlutterError(
               code: "privilege_engine_running", message: "本机引擎正在运行，请先停止再开启全权限。",
@@ -1406,7 +1431,7 @@ final class EngineChannel: NSObject, FlutterStreamHandler {
       // Full permission: one global guest mount table and no namespaces, so
       // /host has to exist before the first guest task starts. A failure here
       // fails the start instead of quietly dropping the permission.
-      if privilegeOnStart {
+      if privilegeOnStart && Self.privilegeMountAvailable {
         // The mount itself happens inside native begin, on the supervisor task.
         // This only makes sure the point exists; a failure fails the start.
         try PrivilegeBridge.createMountPoint(guestRoot: guestRoot)
@@ -1416,6 +1441,9 @@ final class EngineChannel: NSObject, FlutterStreamHandler {
         // exactly what must not happen.
         _ = try PrivilegeBridge.requestMount()
         appendLog("全权限：启动时挂载宿主根目录到 /host。", stream: "system")
+      } else if privilegeOnStart {
+        appendLog("全权限：宿主挂载在当前构建中已禁用，按普通模式启动。", stream: "system")
+        privilegeOnStart = false
       }
       try native?.begin(
         runtime: installer.root.path, guest: guestRoot.path, home: dshHome.path, cache: cache.path,

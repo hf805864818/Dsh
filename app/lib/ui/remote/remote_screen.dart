@@ -11,6 +11,7 @@ import '../../runtime/runtime_state.dart';
 import '../../state/account_api.dart' show AccountProfile;
 import '../../state/app_info.dart';
 import '../../state/connection_state.dart';
+import '../../state/gateway_hosts.dart';
 import '../../state/hosts_state.dart';
 import '../account/account_widgets.dart' show AccountAvatar;
 import '../common/app_dialog.dart';
@@ -29,6 +30,7 @@ import 'network_details_sheet.dart';
 import 'pairing_page.dart';
 import 'relay_credit.dart';
 import 'relay_login_sheet.dart';
+import 'gateway_pair_page.dart';
 import 'ssh_host_form.dart';
 import 'session_backup_page.dart';
 
@@ -172,6 +174,32 @@ class _RemoteScreenState extends ConsumerState<RemoteScreen> {
               spot: Spots.addSshHost,
               subtitle: ssh.isEmpty ? l10n.remoteSshDirect : null,
               onTap: () => unawaited(_addSsh()),
+            ),
+          ],
+        ),
+        // Paired mobile gateways. The 1.4 sync dropped this section from the
+        // remote page as well, which left 手机网关 reachable from nowhere.
+        SettingsSection(
+          title: '手机网关',
+          footer: const Text('电脑上装好 dsh-plugin-mobile-gateway 并启动，然后粘贴它给出的配对码。'),
+          children: [
+            for (final g in ref.watch(gatewayHostsProvider.select((s) => s.hosts)))
+              SettingsTile(
+                icon: AppIcons.cloud,
+                tinted: false,
+                title: g.name,
+                subtitle: '网关 · ${g.url}',
+                trailing: active == HostRef.gateway(g.id, name: g.name)
+                    ? const Icon(AppIcons.selected, size: 20)
+                    : null,
+                onTap: () => unawaited(_use(HostRef.gateway(g.id, name: g.name))),
+              ),
+            SettingsTile(
+              icon: AppIcons.add,
+              tinted: false,
+              title: '添加手机网关（配对码）',
+              subtitle: '不经第三方账号，直连自己电脑上的网关',
+              onTap: () => unawaited(GatewayPairPage.open(context)),
             ),
           ],
         ),

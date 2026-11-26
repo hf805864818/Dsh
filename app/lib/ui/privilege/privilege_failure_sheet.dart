@@ -35,6 +35,12 @@ _StageCopy _copyFor(String stage) => switch (stage) {
     check: r'''# 签名里应该能看到 no-sandbox
 ldid -e Payload/Runner.app/Runner | grep -c com.apple.private.security.no-sandbox''',
   ),
+  'mount_disabled' => (
+    title: '这个构建停用了宿主挂载',
+    cause: '宿主挂载会让引擎启动卡死,所以先在代码里关掉了。宿主文件访问改用原生直通实现,正在开发中。',
+    check: r'''# 当前版本仍能读宿主目录(诊断页「可读」那几行),
+# 但 guest 里没有 /host;原生直通上线后从会话里调用''',
+  ),
   'engine_running' => (
     title: '引擎还在运行',
     cause: '全权限要在引擎停下时切换:它现在还在跑,先停掉再试。',
