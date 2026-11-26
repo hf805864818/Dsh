@@ -278,6 +278,14 @@ class _PrivilegeSectionState extends ConsumerState<_PrivilegeSection> {
             value: probe.denied.entries.map((entry) => '${entry.key}  errno ${entry.value}').join('\n'),
             mono: true,
           ),
+        if (status case final probe?)
+          InfoRow(
+            label: 'dpkg',
+            value: probe.bootstrap.isEmpty
+                ? '未找到（/var/jb 与 /usr/bin 都没有 dpkg）'
+                : probe.bootstrap.join('\n'),
+            mono: true,
+          ),
         ListPageRow(
           icon: AppIcons.refresh,
           title: '重新探测',
@@ -291,7 +299,7 @@ class _PrivilegeSectionState extends ConsumerState<_PrivilegeSection> {
         ListPageRow(
           icon: view.active ? AppIcons.lock : AppIcons.unlock,
           title: view.active ? '停用全权限' : '启用全权限',
-          subtitle: view.active ? '把引擎切回普通参数，宿主目录不再可写' : '停引擎 → 挂载 dsh_root → 以全权限参数重启',
+          subtitle: view.active ? '把引擎切回普通参数，宿主目录不再可写' : '停引擎 → 把宿主 / 挂到 /host → 以全权限参数重启',
           subtitleMaxLines: 2,
           danger: view.active,
           onTap: _busy || (!view.canOffer && view.phase != PrivilegePhase.failed)

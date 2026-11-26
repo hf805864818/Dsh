@@ -194,6 +194,16 @@ private enum PrivilegeProbe {
     "/var/jb",
   ]
 
+  /// Where a jailbreak bootstrap would keep dpkg: rootless first, then rootful.
+  /// Reported separately from `sandboxed`, because a device can be readable
+  /// outside its container and still have no package manager installed.
+  private static let packageManagers = [
+    "/var/jb/usr/bin/dpkg",
+    "/usr/bin/dpkg",
+    "/bin/dpkg",
+    "/var/jb",
+  ]
+
   static func snapshot() -> [String: Any] {
     var readable: [String] = []
     var denied: [String: Int] = [:]
@@ -207,10 +217,16 @@ private enum PrivilegeProbe {
     }
     // A build without the entitlement fails every candidate with EPERM.
     let sandboxed = readable.isEmpty
+    var bootstrap: [String] = []
+    for path in packageManagers {
+      var info = stat()
+      if stat(path, &info) == 0 { bootstrap.append(path) }
+    }
     return [
       "sandboxed": sandboxed,
       "readable": readable,
       "denied": denied,
+      "bootstrap": bootstrap,
       "detail": sandboxed
         ? "受限：签名未包含 no-sandbox，无法读取容器外目录"
         : "可读容器外目录（\(readable.count)/\(candidates.count)）",
