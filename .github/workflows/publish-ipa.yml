@@ -1,0 +1,82 @@
+# Publishes the unsigned IPA of a finished "iOS compile" run as a Release asset.
+#
+# Kept apart from ios-compile.yml on purpose: that workflow is also called by CI
+# through `workflow_call`, and a called workflow may not ask for more than its
+# caller grants, so raising its permissions to `contents: write` fails the whole
+# CI run at startup. A separate `workflow_run` workflow has its own permissions
+# and never touches the build itself.
+name: Publish IPA
+
+on:
+  workflow_run:
+    workflows: ['iOS compile']
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: iOS compile run id to publish
+        required: true
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: publish-ipa-${{ github.event.workflow_run.head_sha || inputs.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # Only a successful build of main has something worth publishing.
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' ||
+          (github.event.workflow_run.conclusion == 'success' &&
+           github.event.workflow_run.head_branch == 'main') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
+      SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - name: Find the unsigned IPA artifact
+        id: find
+        run: |
+          set -euo pipefail
+          id=$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" \
+                 --jq '[.artifacts[] | select(.name == "ios-unsigned-ipa")] | first | .id // empty')
+          if [ -z "$id" ]; then
+            echo "::warning title=publish::that run has no ios-unsigned-ipa artifact"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "found=true" >> "$GITHUB_OUTPUT"
+
+      - name: Download it
+        if: steps.find.outputs.found == 'true'
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPO/actions/artifacts/${{ steps.find.outputs.id }}/zip" > ipa.zip
+          ls -l ipa.zip
+          python3 -c "import zipfile; zipfile.ZipFile('ipa.zip').extractall('out')"
+          ipa=$(find out -name '*.ipa' -type f | head -n 1)
+          test -n "$ipa"
+          mv "$ipa" DSH-Go-unsigned.ipa
+          sha256sum DSH-Go-unsigned.ipa
+
+      - name: Publish as a Release
+        if: steps.find.outputs.found == 'true'
+        run: |
+          set -euo pipefail
+          TAG="build-${SHA:0:12}"
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" DSH-Go-unsigned.ipa --clobber --repo "$REPO"
+          else
+            gh release create "$TAG" --repo "$REPO" --title "DSH Go ${TAG}" --latest=false \
+              --notes "Unsigned IPA built from ${SHA} (run ${RUN_ID})."
+            gh release upload "$TAG" DSH-Go-unsigned.ipa --clobber --repo "$REPO"
+          fi
+          gh release view "$TAG" --repo "$REPO" --json assets \
+            --jq '.assets[] | "\(.name) \(.size) bytes"'
