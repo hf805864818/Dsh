@@ -273,37 +273,22 @@ private enum PrivilegeProbe {
   /// run as this user". The guest cannot help here — iSH executes ELF only, so
   /// an iOS Mach-O dpkg has to be spawned by the App itself.
   private static func dpkgVersion(_ path: String) -> String? {
-    var pipes: [Int32] = [-1, -1]
-    guard pipe(&pipes) == 0 else { return nil }
-    defer { close(pipes[0]); close(pipes[1]) }
-    var actions = posix_spawn_file_actions_t()
-    posix_spawn_file_actions_init(&actions)
-    defer { posix_spawn_file_actions_destroy(&actions) }
-    posix_spawn_file_actions_adddup2(&actions, pipes[1], STDOUT_FILENO)
-    posix_spawn_file_actions_adddup2(&actions, pipes[1], STDERR_FILENO)
-    var pid: pid_t = 0
-    let argv: [String] = [path, "--version"]
-    let cargs = argv.map { strdup($0) } + [nil]
-    defer { for case let pointer? in cargs { free(pointer) } }
-    let started = cargs.withUnsafeBufferPointer { buffer in
-      posix_spawn(&pid, path, &actions, nil, buffer.baseAddress, environ)
+    guard FileManager.default.isExecutableFile(atPath: path) else { return nil }
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: path)
+    process.arguments = ["--version"]
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = pipe
+    do {
+      try process.run()
+    } catch {
+      return nil
     }
-    guard started == 0 else { return nil }
-    close(pipes[1])
-    pipes[1] = -1
-    var data = Data()
-    var chunk = [UInt8](repeating: 0, count: 512)
-    while true {
-      let count = read(pipes[0], &chunk, chunk.count)
-      if count <= 0 { break }
-      data.append(contentsOf: chunk.prefix(count))
-      if data.count > 4096 { break }
-    }
-    var status: Int32 = 0
-    waitpid(pid, &status, 0)
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
     let text = String(decoding: data, as: UTF8.self)
-    let line = text.split(separator: "\n").first.map(String.init) ?? ""
-    return line.isEmpty ? nil : line
+    return text.split(separator: "\n").first.map(String.init)
   }
 
   /// First `dpkg --version` line among the paths that exist, or empty.
