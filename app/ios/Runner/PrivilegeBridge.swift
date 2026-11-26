@@ -98,6 +98,16 @@ enum PrivilegeBridge {
     }
   }
 
+  /// Whether the guest kernel has the host root mounted right now. Read from the
+  /// kernel rather than remembered here, so a failed unmount or a restart cannot
+  /// leave the UI claiming something that is not true.
+  static func isMounted() -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    guard let query = symbolsLocked().query else { return false }
+    return query() == 1
+  }
+
   /// The mount point must exist: iSH's `do_mount` does not create one, and
   /// `guest_backend.c` makes `/workspace` and `/tmp` itself during initialize.
   /// The guest rootfs is a real host directory, so `/host` can be made here.

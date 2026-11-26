@@ -18,6 +18,7 @@ class PrivilegeStatus {
     this.bootstrap = const <String>[],
     this.dpkgVersion = '',
     this.layout = '',
+    this.hostMounted = false,
   });
 
   /// True when no candidate path outside the container could be read.
@@ -44,6 +45,11 @@ class PrivilegeStatus {
   /// rootful `/usr/bin`, rootless `/var/jb`, roothide randomised `.jbroot`, or
   /// unrecognised. Informational only — `/host` is the same host root either way.
   final String layout;
+
+  /// Whether the guest kernel reports the host root mounted at `/host` right now.
+  /// This is the fact the session actually depends on; the preset alone grants
+  /// nothing.
+  final bool hostMounted;
 
   static const PrivilegeStatus unknown = PrivilegeStatus(
     sandboxed: true,
@@ -72,6 +78,7 @@ class PrivilegeStatus {
       detail: map['detail'] is String ? map['detail'] as String : unknown.detail,
       dpkgVersion: map['dpkgVersion'] is String ? map['dpkgVersion'] as String : '',
       layout: map['layout'] is String ? map['layout'] as String : '',
+      hostMounted: map['hostMounted'] == true,
       bootstrap: <String>[
         if (map['bootstrap'] case final List list)
           for (final value in list)

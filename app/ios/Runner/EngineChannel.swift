@@ -347,6 +347,7 @@ private enum PrivilegeProbe {
       "bootstrap": bootstrap,
       "jbroot": found.roots,
       "layout": layout(roots: found.roots, bootstrap: bootstrap),
+      "hostMounted": PrivilegeBridge.isMounted(),
       "dpkgVersion": firstDpkgVersion(bootstrap),
       "detail": sandboxed
         ? "受限：签名未包含 no-sandbox，无法读取容器外目录"
@@ -1408,6 +1409,11 @@ final class EngineChannel: NSObject, FlutterStreamHandler {
         // The mount itself happens inside native begin, on the supervisor task.
         // This only makes sure the point exists; a failure fails the start.
         try PrivilegeBridge.createMountPoint(guestRoot: guestRoot)
+        // Set the intent again here, right before the start that must honour it.
+        // A failing 诊断 › 启用全权限 leaves the flag unset, and a session that
+        // asked for 完全权限 would then start without /host — silently, which is
+        // exactly what must not happen.
+        _ = try PrivilegeBridge.requestMount()
         appendLog("全权限：启动时挂载宿主根目录到 /host。", stream: "system")
       }
       try native?.begin(

@@ -278,6 +278,11 @@ class _PrivilegeSectionState extends ConsumerState<_PrivilegeSection> {
             value: probe.denied.entries.map((entry) => '${entry.key}  errno ${entry.value}').join('\n'),
             mono: true,
           ),
+        if (status case final probe?)
+          InfoRow(
+            label: '宿主挂载',
+            value: probe.hostMounted ? '已挂载 /host（可读写）' : '未挂载 — 选「完全权限」或点下方启用',
+          ),
         if (status case final probe? when probe.layout.isNotEmpty)
           InfoRow(label: '越狱布局', value: probe.layout),
         if (status case final probe?)
