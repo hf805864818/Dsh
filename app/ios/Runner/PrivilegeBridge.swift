@@ -98,14 +98,24 @@ enum PrivilegeBridge {
     }
   }
 
+  /// Whether the guest kernel has the host root mounted right now: `"yes"`,
+  /// `"no"`, or `"unknown"` when this build does not export the query at all.
+  ///
+  /// The third answer matters: a missing symbol must not be reported as "not
+  /// mounted", because that sends the user looking for a mount problem that is
+  /// really a mismatched engine and app.
+  static func mountedState() -> String {
+    lock.lock()
+    defer { lock.unlock() }
+    guard let query = symbolsLocked().query else { return "unknown" }
+    return query() == 1 ? "yes" : "no"
+  }
+
   /// Whether the guest kernel has the host root mounted right now. Read from the
   /// kernel rather than remembered here, so a failed unmount or a restart cannot
   /// leave the UI claiming something that is not true.
   static func isMounted() -> Bool {
-    lock.lock()
-    defer { lock.unlock() }
-    guard let query = symbolsLocked().query else { return false }
-    return query() == 1
+    mountedState() == "yes"
   }
 
   /// The mount point must exist: iSH's `do_mount` does not create one, and

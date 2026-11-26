@@ -348,6 +348,7 @@ private enum PrivilegeProbe {
       "jbroot": found.roots,
       "layout": layout(roots: found.roots, bootstrap: bootstrap),
       "hostMounted": PrivilegeBridge.isMounted(),
+      "hostMount": PrivilegeBridge.mountedState(),
       "dpkgVersion": firstDpkgVersion(bootstrap),
       "detail": sandboxed
         ? "受限：签名未包含 no-sandbox，无法读取容器外目录"

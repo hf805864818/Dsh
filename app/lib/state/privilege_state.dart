@@ -197,6 +197,10 @@ class PrivilegeController extends Notifier<PrivilegeView> {
     }
     _fullAccessSessionId = sessionId;
     state = state.copyWith(phase: PrivilegePhase.enabled, clearFailure: true);
+    // The engine has just restarted with the mount, so the cached probe is stale:
+    // 诊断 › 「宿主挂载」 reads that cache and would still say 未挂载 until someone
+    // tapped 重新探测. Ask again before reporting success.
+    await refreshProbe();
     return true;
   }
 
@@ -237,6 +241,8 @@ class PrivilegeController extends Notifier<PrivilegeView> {
     }
     _fullAccessSessionId = null;
     state = state.copyWith(phase: PrivilegePhase.privileged, clearFailure: true);
+    // Same reason as in enable(): the row must stop claiming /host is mounted.
+    await refreshProbe();
   }
 
   /// Stops the engine and waits for it to leave `running`, as mounts are fixed

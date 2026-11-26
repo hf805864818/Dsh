@@ -19,6 +19,7 @@ class PrivilegeStatus {
     this.dpkgVersion = '',
     this.layout = '',
     this.hostMounted = false,
+    this.hostMountKnown = true,
   });
 
   /// True when no candidate path outside the container could be read.
@@ -51,6 +52,10 @@ class PrivilegeStatus {
   /// nothing.
   final bool hostMounted;
 
+  /// False when the engine does not export the mount query at all. That is a
+  /// different fact from "asked and not mounted", and the row says so.
+  final bool hostMountKnown;
+
   static const PrivilegeStatus unknown = PrivilegeStatus(
     sandboxed: true,
     readable: <String>[],
@@ -79,6 +84,7 @@ class PrivilegeStatus {
       dpkgVersion: map['dpkgVersion'] is String ? map['dpkgVersion'] as String : '',
       layout: map['layout'] is String ? map['layout'] as String : '',
       hostMounted: map['hostMounted'] == true,
+      hostMountKnown: map['hostMount'] is String && map['hostMount'] != 'unknown',
       bootstrap: <String>[
         if (map['bootstrap'] case final List list)
           for (final value in list)
