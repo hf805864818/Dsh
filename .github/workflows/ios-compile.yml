@@ -26,7 +26,9 @@ on:
         default: false
 
 permissions:
-  contents: read
+  # `contents: write` lets the engine job publish the unsigned IPA as a Release
+  # asset; nothing else in this workflow writes.
+  contents: write
 
 concurrency:
   group: ios-compile-${{ github.ref }}
@@ -558,6 +560,29 @@ jobs:
           if-no-files-found: ignore
           compression-level: 0
           retention-days: 14
+
+      # Publishes the unsigned IPA as a Release asset, so a finished build is
+      # downloadable from Releases without a manual upload. The tag carries the
+      # commit, so every build stays addressable.
+      - name: Publish the unsigned IPA as a Release
+        if: ${{ !inputs.regression_only && success() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IPA: ${{ runner.temp }}/DSH-Go-unsigned.ipa
+        run: |
+          if [ ! -f "$IPA" ]; then
+            echo "::warning title=publish::no unsigned IPA was produced, nothing to publish"
+            exit 0
+          fi
+          TAG="build-${GITHUB_SHA:0:12}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$IPA" --clobber
+          else
+            gh release create "$TAG" --title "DSH Go ${TAG}" --latest=false \
+              --notes "Unsigned IPA built from ${GITHUB_SHA}."
+            gh release upload "$TAG" "$IPA" --clobber
+          fi
+          gh release view "$TAG" --json assets --jq '.assets[] | "\(.name) \(.size) bytes"'
 
       - name: Keep the launch screenshot
         if: ${{ !inputs.regression_only && always() }}
