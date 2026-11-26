@@ -266,6 +266,7 @@ private enum PrivilegeProbe {
       "readable": readable,
       "denied": denied,
       "bootstrap": bootstrap,
+      "dpkgVersion": bootstrap.first(where: { $0.hasSuffix("/dpkg") }).flatMap(dpkgVersion) ?? "",
       "detail": sandboxed
         ? "受限：签名未包含 no-sandbox，无法读取容器外目录"
         : "可读容器外目录（\(readable.count)/\(candidates.count)）",

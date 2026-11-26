@@ -16,6 +16,7 @@ class PrivilegeStatus {
     required this.denied,
     required this.detail,
     this.bootstrap = const <String>[],
+    this.dpkgVersion = '',
   });
 
   /// True when no candidate path outside the container could be read.
@@ -33,6 +34,10 @@ class PrivilegeStatus {
   /// Jailbreak package-manager paths that exist, e.g. `/var/jb/usr/bin/dpkg`.
   /// Empty means none found: a readable-outside build can still have no dpkg.
   final List<String> bootstrap;
+
+  /// First line of `dpkg --version`, spawned natively by the host. Empty means
+  /// the binary did not run as this user even though the path exists.
+  final String dpkgVersion;
 
   static const PrivilegeStatus unknown = PrivilegeStatus(
     sandboxed: true,
@@ -59,6 +64,7 @@ class PrivilegeStatus {
             if (entry.key is String && entry.value is int) entry.key as String: entry.value as int,
       },
       detail: map['detail'] is String ? map['detail'] as String : unknown.detail,
+      dpkgVersion: map['dpkgVersion'] is String ? map['dpkgVersion'] as String : '',
       bootstrap: <String>[
         if (map['bootstrap'] case final List list)
           for (final value in list)

@@ -283,7 +283,7 @@ class _PrivilegeSectionState extends ConsumerState<_PrivilegeSection> {
             label: 'dpkg',
             value: probe.bootstrap.isEmpty
                 ? '未找到（rootful /usr/bin、rootless /var/jb、Roothide .jbroot 都没有）'
-                : probe.bootstrap.join('\n'),
+                : '${probe.bootstrap.join('\n')}${probe.dpkgVersion.isEmpty ? '\n（路径在，但以当前身份跑不起来）' : '\n${probe.dpkgVersion}'}',
             mono: true,
           ),
         ListPageRow(
