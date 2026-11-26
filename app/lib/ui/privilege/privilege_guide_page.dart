@@ -84,6 +84,7 @@ class PrivilegeGuidePage extends StatelessWidget {
       SettingsSection(title: '步骤 5 · 重新打包', children: [PrivilegeCodeBlock(code: _repack, language: 'bash')]),
       SettingsSection(
         title: '风险',
+        footer: Text('重签前先备份一份能用的 IPA。'),
         children: [
           ListPageRow(
             icon: AppIcons.warning,
@@ -104,7 +105,6 @@ class PrivilegeGuidePage extends StatelessWidget {
             subtitleMaxLines: 2,
           ),
         ],
-        footer: Text('重签前先备份一份能用的 IPA。'),
       ),
     ],
   );
