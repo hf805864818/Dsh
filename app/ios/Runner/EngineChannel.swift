@@ -266,6 +266,54 @@ private enum PrivilegeProbe {
     return "未识别（无 bootstrap 或不可读）"
   }
 
+  /// Runs `dpkg --version` natively and keeps its first line.
+  ///
+  /// Existence alone proves little: a binary can be there and still be the wrong
+  /// arch, unreadable, or refused. Spawning it answers "does this dpkg actually
+  /// run as this user". The guest cannot help here — iSH executes ELF only, so
+  /// an iOS Mach-O dpkg has to be spawned by the App itself.
+  private static func dpkgVersion(_ path: String) -> String? {
+    var pipes: [Int32] = [-1, -1]
+    guard pipe(&pipes) == 0 else { return nil }
+    defer { close(pipes[0]); close(pipes[1]) }
+    var actions = posix_spawn_file_actions_t()
+    posix_spawn_file_actions_init(&actions)
+    defer { posix_spawn_file_actions_destroy(&actions) }
+    posix_spawn_file_actions_adddup2(&actions, pipes[1], STDOUT_FILENO)
+    posix_spawn_file_actions_adddup2(&actions, pipes[1], STDERR_FILENO)
+    var pid: pid_t = 0
+    let argv: [String] = [path, "--version"]
+    let cargs = argv.map { strdup($0) } + [nil]
+    defer { for case let pointer? in cargs { free(pointer) } }
+    let started = cargs.withUnsafeBufferPointer { buffer in
+      posix_spawn(&pid, path, &actions, nil, buffer.baseAddress, environ)
+    }
+    guard started == 0 else { return nil }
+    close(pipes[1])
+    pipes[1] = -1
+    var data = Data()
+    var chunk = [UInt8](repeating: 0, count: 512)
+    while true {
+      let count = read(pipes[0], &chunk, chunk.count)
+      if count <= 0 { break }
+      data.append(contentsOf: chunk.prefix(count))
+      if data.count > 4096 { break }
+    }
+    var status: Int32 = 0
+    waitpid(pid, &status, 0)
+    let text = String(decoding: data, as: UTF8.self)
+    let line = text.split(separator: "\n").first.map(String.init) ?? ""
+    return line.isEmpty ? nil : line
+  }
+
+  /// First `dpkg --version` line among the paths that exist, or empty.
+  private static func firstDpkgVersion(_ paths: [String]) -> String {
+    for path in paths where path.hasSuffix("/dpkg") {
+      if let version = dpkgVersion(path) { return version }
+    }
+    return ""
+  }
+
   static func snapshot() -> [String: Any] {
     var readable: [String] = []
     var denied: [String: Int] = [:]
@@ -289,7 +337,7 @@ private enum PrivilegeProbe {
       "bootstrap": bootstrap,
       "jbroot": found.roots,
       "layout": layout(roots: found.roots, bootstrap: bootstrap),
-      "dpkgVersion": bootstrap.first(where: { $0.hasSuffix("/dpkg") }).flatMap(dpkgVersion) ?? "",
+      "dpkgVersion": firstDpkgVersion(bootstrap),
       "detail": sandboxed
         ? "受限：签名未包含 no-sandbox，无法读取容器外目录"
         : "可读容器外目录（\(readable.count)/\(candidates.count)）",
