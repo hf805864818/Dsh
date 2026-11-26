@@ -17,6 +17,7 @@ class PrivilegeStatus {
     required this.detail,
     this.bootstrap = const <String>[],
     this.dpkgVersion = '',
+    this.layout = '',
   });
 
   /// True when no candidate path outside the container could be read.
@@ -38,6 +39,11 @@ class PrivilegeStatus {
   /// First line of `dpkg --version`, spawned natively by the host. Empty means
   /// the binary did not run as this user even though the path exists.
   final String dpkgVersion;
+
+  /// Which jailbreak layout the probe actually saw, named for the settings row:
+  /// rootful `/usr/bin`, rootless `/var/jb`, roothide randomised `.jbroot`, or
+  /// unrecognised. Informational only — `/host` is the same host root either way.
+  final String layout;
 
   static const PrivilegeStatus unknown = PrivilegeStatus(
     sandboxed: true,
@@ -65,6 +71,7 @@ class PrivilegeStatus {
       },
       detail: map['detail'] is String ? map['detail'] as String : unknown.detail,
       dpkgVersion: map['dpkgVersion'] is String ? map['dpkgVersion'] as String : '',
+      layout: map['layout'] is String ? map['layout'] as String : '',
       bootstrap: <String>[
         if (map['bootstrap'] case final List list)
           for (final value in list)

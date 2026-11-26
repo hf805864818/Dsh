@@ -225,7 +225,8 @@ private enum PrivilegeProbe {
   /// Finds `usr/bin/dpkg` inside a randomised `.jbroot*` (or Dopamine's
   /// `jb-*/procursus`) directory. Bounded on purpose: this runs from a settings
   /// screen, not a filesystem crawler.
-  private static func discovered() -> [String] {
+  private static func discovered() -> (roots: [String], dpkg: [String]) {
+    var roots: [String] = []
     var found: [String] = []
     let manager = FileManager.default
     for home in jbrootHomes {
@@ -235,15 +236,34 @@ private enum PrivilegeProbe {
         let root = "\(home)/\(entry)"
         let direct = "\(root)/usr/bin/dpkg"
         if exists(direct) {
+          roots.append(root)
           found.append(direct)
           continue
         }
         // Dopamine keeps one more level: jb-<hash>/procursus/usr/bin/dpkg
         let nested = "\(root)/procursus/usr/bin/dpkg"
-        if exists(nested) { found.append(nested) }
+        if exists(nested) {
+          roots.append(root)
+          found.append(nested)
+        }
       }
     }
-    return found
+    return (roots, found)
+  }
+
+  /// Names the layout the probe actually saw, instead of assuming one.
+  ///
+  /// Nothing here is granted by naming it: the host root is mounted whole, so
+  /// `/host` covers every layout alike. This only tells the user which of their
+  /// jailbreak's directories the App can reach, and therefore which dpkg (if
+  /// any) it may run.
+  private static func layout(roots: [String], bootstrap: [String]) -> String {
+    if !roots.isEmpty { return "roothide（随机 .jbroot 路径）" }
+    if bootstrap.contains(where: { $0 == "/var/jb" || $0.hasPrefix("/var/jb/") }) {
+      return "rootless（/var/jb）"
+    }
+    if bootstrap.contains("/usr/bin/dpkg") { return "rootful（/usr/bin）" }
+    return "未识别（无 bootstrap 或不可读）"
   }
 
   static func snapshot() -> [String: Any] {
@@ -259,13 +279,16 @@ private enum PrivilegeProbe {
     }
     // A build without the entitlement fails every candidate with EPERM.
     let sandboxed = readable.isEmpty
+    let found = discovered()
     var bootstrap = packageManagers.filter(exists)
-    for path in discovered() where !bootstrap.contains(path) { bootstrap.append(path) }
+    for path in found.dpkg where !bootstrap.contains(path) { bootstrap.append(path) }
     return [
       "sandboxed": sandboxed,
       "readable": readable,
       "denied": denied,
       "bootstrap": bootstrap,
+      "jbroot": found.roots,
+      "layout": layout(roots: found.roots, bootstrap: bootstrap),
       "dpkgVersion": bootstrap.first(where: { $0.hasSuffix("/dpkg") }).flatMap(dpkgVersion) ?? "",
       "detail": sandboxed
         ? "受限：签名未包含 no-sandbox，无法读取容器外目录"
