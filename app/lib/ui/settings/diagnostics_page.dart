@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // See THIRD_PARTY_NOTICES.md.
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -18,6 +19,7 @@ import '../../runtime/runtime_bridge.dart';
 import '../../state/android_features.dart';
 import '../../state/app_info.dart';
 import '../../state/connection_state.dart';
+import '../../state/privilege_probe.dart';
 import '../../state/settings_state.dart';
 import '../../state/hosts_state.dart';
 import '../../state/sessions_state.dart';
@@ -155,10 +157,79 @@ class DiagnosticsPage extends ConsumerWidget {
             ),
           ],
         ),
+        // Signed entitlements decide what this build may read; the probe reports
+        // what the kernel actually allowed, so "did you re-sign" stops being a
+        // guess. Full-permission sessions build on this.
+        const _PrivilegeSection(),
         // The note belongs to the export card; the next group starts 24 below
         // it, as groups do.
         const DiagnosticsBundleNote(),
         if (ref.watch(androidSystemFeaturesProvider)) ...[const SizedBox(height: 24), const DirectEngineSettings()],
+      ],
+    );
+  }
+}
+
+/// What the current signature allows outside the app container.
+///
+/// `no-sandbox` and `platform-application` are signing-time entitlements, so a
+/// build that was not re-signed cannot read the phone's shared folders however
+/// the app is configured. Showing the probe's answer here turns that into a
+/// fact the user can act on, instead of a silent permission failure later.
+class _PrivilegeSection extends StatefulWidget {
+  const _PrivilegeSection();
+
+  @override
+  State<_PrivilegeSection> createState() => _PrivilegeSectionState();
+}
+
+class _PrivilegeSectionState extends State<_PrivilegeSection> {
+  PrivilegeStatus? _status;
+  bool _busy = true;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_probe());
+  }
+
+  Future<void> _probe() async {
+    setState(() => _busy = true);
+    final status = await PrivilegeProbe.read(refresh: true);
+    if (!mounted) return;
+    setState(() {
+      _status = status;
+      _busy = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final status = _status;
+    return SettingsSection(
+      title: '全权限（宿主目录）',
+      children: [
+        InfoRow(
+          label: '签名状态',
+          value: _busy ? '探测中…' : (status?.sandboxed == true ? '受限（沙箱内）' : '可读容器外目录'),
+        ),
+        if (status != null) InfoRow(label: '说明', value: status.detail),
+        if (status != null && status.readable.isNotEmpty)
+          InfoRow(label: '可读', value: status.readable.join('\n'), mono: true),
+        if (status != null && status.denied.isNotEmpty)
+          InfoRow(
+            label: '被拒',
+            value: status.denied.entries.map((entry) => '${entry.key}  errno ${entry.value}').join('\n'),
+            mono: true,
+          ),
+        ListPageRow(
+          icon: AppIcons.refresh,
+          title: '重新探测',
+          subtitle: status?.canEscalate == true
+              ? '当前签名可开启「完全权限」会话'
+              : '需要重签 IPA 加入 no-sandbox 才能开启完全权限',
+          onTap: _busy ? null : _probe,
+        ),
       ],
     );
   }

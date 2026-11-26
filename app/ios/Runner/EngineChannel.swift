@@ -176,6 +176,48 @@ private final class NativeEngine {
   }
 }
 
+/// Whether this build can read outside its own container.
+///
+/// `com.apple.private.security.no-sandbox` and `platform-application` are
+/// signing-time entitlements, so an app cannot grant itself either at runtime
+/// and a jailbroken device alone does not lift the sandbox: the profile follows
+/// the signature. The only honest answer is to try — `stat` a directory the
+/// sandbox forbids and report what the kernel said. Nothing here touches engine
+/// state, so it can answer before the engine queue.
+private enum PrivilegeProbe {
+  /// Directories a sandboxed app may not traverse. `/var/jb` is the rootless
+  /// jailbreak bootstrap; it is absent (not merely denied) on stock devices.
+  private static let candidates = [
+    "/var/mobile/Documents",
+    "/private/var/mobile/Documents",
+    "/var/mobile/Media",
+    "/var/jb",
+  ]
+
+  static func snapshot() -> [String: Any] {
+    var readable: [String] = []
+    var denied: [String: Int] = [:]
+    for path in candidates {
+      var info = stat()
+      if stat(path, &info) == 0 {
+        readable.append(path)
+      } else {
+        denied[path] = Int(errno)
+      }
+    }
+    // A build without the entitlement fails every candidate with EPERM.
+    let sandboxed = readable.isEmpty
+    return [
+      "sandboxed": sandboxed,
+      "readable": readable,
+      "denied": denied,
+      "detail": sandboxed
+        ? "受限：签名未包含 no-sandbox，无法读取容器外目录"
+        : "可读容器外目录（\(readable.count)/\(candidates.count)）",
+    ]
+  }
+}
+
 /// Read-only roots for preference relocation before the first engine start.
 private enum IOSContainerPaths {
   private struct Marker: Decodable {
@@ -728,6 +770,10 @@ final class EngineChannel: NSObject, FlutterStreamHandler {
       return result(IOSContainerPaths.snapshot(guestRoot: guestRoot, support: filesDirectory))
     }
     if call.method == "backgroundProtection" { return result(backgroundProtection.status()) }
+    // Signing-time entitlements decide whether this build may leave its
+    // container; the only honest answer is to try. No engine state is touched,
+    // so this answers before the queue.
+    if call.method == "privilegeProbe" { return result(PrivilegeProbe.snapshot()) }
     if call.method == "setBackgroundProtection" {
       for key in ["audioEnabled", "locationEnabled"] where arguments[key] != nil {
         guard arguments[key] is Bool else {
