@@ -36,6 +36,11 @@ static struct dsh_crash_guard crash_guard = DSH_CRASH_GUARD_INIT;
 static struct dsh_path_span *protected;
 static size_t protected_count;
 static int workspace_mounted, temp_mounted, waiting, install_change;
+// The host root, mounted at /host by the app's own request (full-permission
+// sessions). Both the mount and its undo run here, where current is the
+// supervisor task: iSH resolves mount points through current->fs, so the app
+// cannot call dsh_bound_mount() itself.
+static int host_mount_requested, host_mounted;
 
 static int host_error(int e) {
   switch (e) {
@@ -218,7 +223,29 @@ static char *pack(const char *const *values, size_t count, int env) {
   }
   return result;
 }
-static int unmount_job(void) {
+// Opens the host root and mounts it at /host. Caller holds no lock; `current`
+// must already be the supervisor task, which the start path guarantees.
+static int mount_host_root(void) {
+  int fd = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (fd < 0) return errno == EACCES ? EACCES : EIO;
+  dsh_root *root = dsh_root_new_workspace(fd, false);
+  close(fd);
+  if (!root) return ENOMEM;
+  current = supervisor;
+  int e = host_error(dsh_bound_mount("/host", root, 0, 0));
+  if (e) dsh_root_free(root);
+  else host_mounted = 1;
+  return e;
+}
+// Holds mounts_lock. Returns 0 once /host is gone (or was never there).
+static int unmount_host_root(void) {
+  if (!host_mounted) return 0;
+  lock(&mounts_lock);
+  int e = do_umount("/host");
+  if (!e) host_mounted = 0;
+  unlock(&mounts_lock);
+  return host_error(e);
+}static int unmount_job(void) {
   int e = 0;
   lock(&mounts_lock);
   if (temp_mounted) {
@@ -228,6 +255,10 @@ static int unmount_job(void) {
   if (!e && workspace_mounted) {
     e = do_umount("/workspace");
     if (!e) workspace_mounted = 0;
+  }
+  if (!e && host_mounted) {
+    e = do_umount("/host");
+    if (!e) host_mounted = 0;
   }
   unlock(&mounts_lock);
   return host_error(e);
@@ -308,6 +339,9 @@ int dsh_guest_start_with_permissions(const struct dsh_guest_request *request,
     e = host_error(dsh_bound_mount("/tmp", temporary, 0, 0));
     if (!e) { temporary = NULL; temp_mounted = 1; }
   }
+  // Full-permission sessions: the app asked for the host root, so expose it.
+  // Failure is reported, never swallowed: the caller's start fails.
+  if (!e && host_mount_requested && !host_mounted) e = mount_host_root();
   if (!e) e = host_error(become_new_init_child());
   if (!e) {
     task = current;
@@ -493,7 +527,18 @@ void dsh_guest_end_install_change(void) {
   pthread_mutex_unlock(&gate);
 }
 
-int dsh_guest_kill(uint64_t id) {
+// The app's switch for the host root. `enable` only records the intent: the
+// mount happens inside the next start, where `current` is the supervisor task
+// and the guest has no threads yet. Turning it off unmounts at once; a guest
+// still running is refused so the caller can stop it first.
+int dsh_guest_set_host_mount(int enable) {
+  if (enable != 0 && enable != 1) return EINVAL;
+  if (state == DSH_GUEST_RUNNING) return EBUSY;
+  host_mount_requested = enable;
+  if (enable) return 0;
+  return unmount_host_root();
+}
+int dsh_guest_host_mounted(void) { return host_mounted; }int dsh_guest_kill(uint64_t id) {
   pthread_mutex_lock(&gate);
   int e = active(id);
   if (!e) { dsh_job_bridge_cancel_requested(bridge); dsh_job_signal(id, SIGKILL_); }

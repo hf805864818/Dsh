@@ -30,7 +30,9 @@ import '../../../state/connection_state.dart';
 import '../../../state/features_state.dart';
 import '../../../state/hosts_state.dart';
 import '../../../state/phone_state.dart';
+import '../../../state/privilege_state.dart';
 import '../../../state/session_modes.dart';
+import '../../../state/settings_state.dart';
 import '../../../state/system_actions_state.dart';
 import '../../common/app_sheet.dart';
 import '../../common/list_page_row.dart';
@@ -41,6 +43,7 @@ import '../../features/feature_format.dart';
 import '../../features/permission_page.dart' show confirmPermission, writePermissionDefault;
 import '../../phone/phone_control_screen.dart' show PhoneConfirmModeText;
 import '../../phone/system_actions_page.dart';
+import '../../privilege/privilege_failure_sheet.dart' show PrivilegeFailureChoice, showPrivilegeFailureSheet;
 import '../../theme/app_icons.dart';
 import '../../theme/theme.dart';
 
@@ -382,11 +385,58 @@ class _SessionPermissionPageState extends ConsumerState<SessionPermissionPage> {
   String? _picked;
   bool _busy = false;
 
+  /// 完全权限 is the app's own switch on top of the preset: the host mounts
+  /// the host root at /host, so it also needs a re-signed build.
+  static const _fullAccess = 'danger-full-access';
+
   void _toast(String text) => ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(content: Text(text)));
 
   Future<void> _pick(String value, String? current) async {
     if (_busy || value == current) return;
     if (!await confirmPermission(context, value) || !mounted) return;
+    final privilege = ref.read(privilegeControllerProvider.notifier);
+    final view = ref.read(privilegeControllerProvider);
+
+    if (value == _fullAccess) {
+      // The host mounts its own root at /host for this: without a re-signed build
+      // there is nothing to switch to, and enable() names the missing step
+      // (probe_denied) instead of failing at the mount.
+      setState(() => _busy = true);
+      final settings = ref.read(settingsProvider);
+      final enabled = await privilege.enable(
+        widget.sessionId,
+        phoneStorage: settings.phoneStorage,
+        visualReplies: settings.visualReplies,
+      );
+      if (!mounted) return;
+      if (!enabled) {
+        setState(() => _busy = false);
+        final failed = ref.read(privilegeControllerProvider);
+        if (failed.phase == PrivilegePhase.sandboxed) {
+          // Not re-signed: the sheet names that step (probe_denied).
+          await showPrivilegeFailureSheet(context, stage: 'probe_denied', message: failed.message);
+        } else if (failed.failureStage case final stage?) {
+          final choice = await showPrivilegeFailureSheet(
+            context,
+            stage: stage,
+            errno: failed.errno,
+            message: failed.message,
+          );
+          if (choice == PrivilegeFailureChoice.retry) await _pick(value, current);
+        } else {
+          // Another conversation owns the mode; there is nothing to retry.
+          _toast(failed.message ?? '请先结束当前全权限会话');
+        }
+        return;
+      }
+    } else if (privilege.fullAccessSessionId == widget.sessionId) {
+      // Leaving 完全权限 takes the mounts down with the preset.
+      await privilege.disable();
+      if (!mounted) return;
+    } else if (view.phase == PrivilegePhase.enabling || view.phase == PrivilegePhase.disabling) {
+      return;
+    }
+
     setState(() {
       _busy = true;
       _picked = value;
@@ -446,6 +496,11 @@ class _SessionPermissionPageState extends ConsumerState<SessionPermissionPage> {
           current != state.hostDefault &&
           revision != null &&
           defaults.any((o) => o.value == current);
+      // 完全权限 is also the host's mounts: the row says so while this
+      // conversation owns them.
+      final privilege = ref.watch(privilegeControllerProvider);
+      final hostFull =
+          privilege.active && ref.read(privilegeControllerProvider.notifier).fullAccessSessionId == widget.sessionId;
       body = Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -458,11 +513,13 @@ class _SessionPermissionPageState extends ConsumerState<SessionPermissionPage> {
                   inMutuallyExclusiveGroup: true,
                   child: ListPageRow(
                     title: permissionName(o.value, o.name),
-                    subtitle: permissionHint(o.value, o.description),
+                    subtitle: o.value == _fullAccess && hostFull
+                        ? '完全权限 · 宿主可读写'
+                        : permissionHint(o.value, o.description),
                     onTap: _busy ? null : () => unawaited(_pick(o.value, current)),
                     trailing: o.value == current
                         ? Icon(AppIcons.selected, size: 22, color: theme.colorScheme.primary)
-                        : o.value == 'danger-full-access'
+                        : o.value == _fullAccess
                         ? Icon(AppIcons.permissionRisky, size: 18, color: dsh.warning)
                         : const SizedBox.square(dimension: 22),
                   ),

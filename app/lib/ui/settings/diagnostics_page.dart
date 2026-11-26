@@ -20,6 +20,7 @@ import '../../state/android_features.dart';
 import '../../state/app_info.dart';
 import '../../state/connection_state.dart';
 import '../../state/privilege_probe.dart';
+import '../../state/privilege_state.dart';
 import '../../state/settings_state.dart';
 import '../../state/hosts_state.dart';
 import '../../state/sessions_state.dart';
@@ -30,6 +31,8 @@ import '../engine/engine_screen.dart' show shortRuntimeVersion;
 import '../engine/engine_status.dart';
 import '../shell/page_frame.dart';
 import '../phone/phone_control_screen.dart';
+import '../privilege/privilege_failure_sheet.dart';
+import '../privilege/privilege_guide_page.dart';
 import '../theme/app_icons.dart';
 import 'settings_widgets.dart';
 import 'direct_engine_settings.dart';
@@ -170,22 +173,24 @@ class DiagnosticsPage extends ConsumerWidget {
   }
 }
 
-/// What the current signature allows outside the app container.
+/// What the current signature allows outside the app container, and the switch
+/// that acts on it.
 ///
 /// `no-sandbox` and `platform-application` are signing-time entitlements, so a
 /// build that was not re-signed cannot read the phone's shared folders however
-/// the app is configured. Showing the probe's answer here turns that into a
-/// fact the user can act on, instead of a silent permission failure later.
-class _PrivilegeSection extends StatefulWidget {
+/// the app is configured. The phase and the failing stage come from
+/// [privilegeControllerProvider] — the same source the chat's permission panel
+/// reads — so this page and the panel never disagree about whether full
+/// permission is on.
+class _PrivilegeSection extends ConsumerStatefulWidget {
   const _PrivilegeSection();
 
   @override
-  State<_PrivilegeSection> createState() => _PrivilegeSectionState();
+  ConsumerState<_PrivilegeSection> createState() => _PrivilegeSectionState();
 }
 
-class _PrivilegeSectionState extends State<_PrivilegeSection> {
-  PrivilegeStatus? _status;
-  bool _busy = true;
+class _PrivilegeSectionState extends ConsumerState<_PrivilegeSection> {
+  bool _busy = false;
 
   @override
   void initState() {
@@ -195,40 +200,111 @@ class _PrivilegeSectionState extends State<_PrivilegeSection> {
 
   Future<void> _probe() async {
     setState(() => _busy = true);
-    final status = await PrivilegeProbe.read(refresh: true);
-    if (!mounted) return;
-    setState(() {
-      _status = status;
-      _busy = false;
-    });
+    await ref.read(privilegeControllerProvider.notifier).refreshProbe();
+    if (mounted) setState(() => _busy = false);
   }
+
+  /// The switch itself. The diagnostics page owns no conversation, so it claims
+  /// the mode under [PrivilegeController.diagnosticsSessionId]: a chat switched
+  /// on afterwards is told to end this one first.
+  Future<void> _setEnabled(bool enabled) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    final controller = ref.read(privilegeControllerProvider.notifier);
+    if (!enabled) {
+      await controller.disable();
+      if (mounted) setState(() => _busy = false);
+      return;
+    }
+    final settings = ref.read(settingsProvider);
+    final ok = await controller.enable(
+      PrivilegeController.diagnosticsSessionId,
+      phoneStorage: settings.phoneStorage,
+      visualReplies: settings.visualReplies,
+    );
+    if (!mounted) return;
+    setState(() => _busy = false);
+    if (ok) {
+      showBriefNotice(context, '完全权限已开启');
+      return;
+    }
+    final view = ref.read(privilegeControllerProvider);
+    if (view.phase == PrivilegePhase.sandboxed) {
+      await showPrivilegeFailureSheet(context, stage: 'probe_denied', message: view.message);
+      return;
+    }
+    if (view.failureStage case final stage?) {
+      final choice = await showPrivilegeFailureSheet(
+        context,
+        stage: stage,
+        errno: view.errno,
+        message: view.message,
+      );
+      if (choice == PrivilegeFailureChoice.retry) await _setEnabled(true);
+      return;
+    }
+    showBriefNotice(context, view.message ?? '请先结束当前全权限会话');
+  }
+
+  static String _phaseLabel(PrivilegePhase phase) => switch (phase) {
+    PrivilegePhase.sandboxed => '受限（沙箱内）',
+    PrivilegePhase.privileged => '可读容器外目录',
+    PrivilegePhase.enabling => '正在切换…',
+    PrivilegePhase.enabled => '完全权限 · 宿主可读写',
+    PrivilegePhase.disabling => '正在关闭…',
+    PrivilegePhase.failed => '失败',
+  };
 
   @override
   Widget build(BuildContext context) {
-    final status = _status;
+    final view = ref.watch(privilegeControllerProvider);
+    final status = PrivilegeProbe.cached;
+    final stage = view.phase == PrivilegePhase.failed ? view.failureStage : null;
+    final phaseText = _busy
+        ? '探测中…'
+        : stage == null
+        ? _phaseLabel(view.phase)
+        : '${_phaseLabel(view.phase)}：$stage${view.errno == null ? '' : ' · errno ${view.errno}'}';
     return SettingsSection(
       title: '全权限（宿主目录）',
       children: [
-        InfoRow(
-          label: '签名状态',
-          value: _busy ? '探测中…' : (status?.sandboxed == true ? '受限（沙箱内）' : '可读容器外目录'),
-        ),
-        if (status != null) InfoRow(label: '说明', value: status.detail),
-        if (status != null && status.readable.isNotEmpty)
-          InfoRow(label: '可读', value: status.readable.join('\n'), mono: true),
-        if (status != null && status.denied.isNotEmpty)
+        InfoRow(label: '签名状态', value: phaseText),
+        if (view.message case final message? when message.isNotEmpty) InfoRow(label: '说明', value: message),
+        if (status case final probe? when probe.readable.isNotEmpty)
+          InfoRow(label: '可读', value: probe.readable.join('\n'), mono: true),
+        if (status case final probe? when probe.denied.isNotEmpty)
           InfoRow(
             label: '被拒',
-            value: status.denied.entries.map((entry) => '${entry.key}  errno ${entry.value}').join('\n'),
+            value: probe.denied.entries.map((entry) => '${entry.key}  errno ${entry.value}').join('\n'),
             mono: true,
           ),
         ListPageRow(
           icon: AppIcons.refresh,
           title: '重新探测',
-          subtitle: status?.canEscalate == true
+          subtitle: view.phase == PrivilegePhase.sandboxed
+              ? '需要重签 IPA 加入 no-sandbox 才能开启完全权限'
+              : view.canOffer
               ? '当前签名可开启「完全权限」会话'
-              : '需要重签 IPA 加入 no-sandbox 才能开启完全权限',
+              : '探测中，稍等',
           onTap: _busy ? null : _probe,
+        ),
+        ListPageRow(
+          icon: view.active ? AppIcons.lock : AppIcons.unlock,
+          title: view.active ? '停用全权限' : '启用全权限',
+          subtitle: view.active ? '把引擎切回普通参数，宿主目录不再可写' : '停引擎 → 挂载 dsh_root → 以全权限参数重启',
+          subtitleMaxLines: 2,
+          danger: view.active,
+          onTap: _busy || (!view.canOffer && view.phase != PrivilegePhase.failed)
+              ? null
+              : () => unawaited(_setEnabled(!view.active)),
+        ),
+        ListPageRow(
+          icon: AppIcons.instructions,
+          title: '重签教程',
+          subtitle: '加入 no-sandbox 与 platform-application 的完整步骤',
+          onTap: () => unawaited(
+            Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const PrivilegeGuidePage())),
+          ),
         ),
       ],
     );

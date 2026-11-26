@@ -597,6 +597,10 @@ final class EngineChannel: NSObject, FlutterStreamHandler {
   private var lastErrorCode = ""
   private var queuedStart: (env: [String: String], visualReplies: Bool)?
   private var lastStart: (env: [String: String], visualReplies: Bool)?
+  /// A `start` asked for `privilege: "full"`. The mount itself lives in
+  /// `PrivilegeBridge`; this only records the request, including one queued
+  /// behind a stop and one repeated by the lost-server restart.
+  private var privilegeOnStart = false
   private var initialized = false
 
   private var logSequence = 0
@@ -804,7 +808,8 @@ final class EngineChannel: NSObject, FlutterStreamHandler {
         case "start":
           try start(
             env: arguments["env"] as? [String: Any], phoneStorage: arguments["phoneStorage"] as? Bool ?? false,
-            mode: arguments["mode"] as? String, visualReplies: arguments["visualReplies"] as? Bool ?? true)
+            mode: arguments["mode"] as? String, visualReplies: arguments["visualReplies"] as? Bool ?? true,
+            privilege: EngineChannel.fullPrivilege(arguments["privilege"]))
           reply(nil)
         case "stop":
           stop()
@@ -817,6 +822,32 @@ final class EngineChannel: NSObject, FlutterStreamHandler {
             backgroundProtection.update(taskRunning: running || phoneTaskRunning)
           }
           reply(nil)
+        // Full permission owns the guest mount table, so it is granted and
+        // revoked only between engine generations, never under a live one.
+        case "privilegeEnable":
+          if let running = engineGeneration() {
+            reply(FlutterError(
+              code: "privilege_engine_running", message: "本机引擎正在运行，请先停止再开启全权限。",
+              details: ["stage": "engine_running", "errno": 0, "detail": "phase=\(running)"] as [String: Any]))
+            return
+          }
+          // Only records the request: the mount happens inside the next start,
+          // where the guest has a supervisor task and no running threads yet.
+          try PrivilegeBridge.createMountPoint(guestRoot: guestRoot)
+          reply(try PrivilegeBridge.requestMount())
+          appendLog("全权限：已请求宿主根目录挂载（下次启动生效）。", stream: "system")
+        case "privilegeDisable":
+          if let running = engineGeneration() {
+            reply(FlutterError(
+              code: "privilege_engine_running", message: "本机引擎正在运行，请先停止再关闭全权限。",
+              details: ["stage": "engine_running", "errno": 0, "detail": "phase=\(running)"] as [String: Any]))
+            return
+          }
+          try PrivilegeBridge.requestUnmount()
+          appendLog("全权限：已卸载 /host。", stream: "system")
+          reply(PrivilegeBridge.status())
+        case "privilegeStatus":
+          reply(PrivilegeBridge.status())
         case "reset":
           try reset(keep: arguments["keep"] as? [String] ?? []) { reply(nil) } failed: { reply(self.flutterError($0)) }
         case "reopenApp":
@@ -866,7 +897,30 @@ final class EngineChannel: NSObject, FlutterStreamHandler {
     if let failure = error as? EngineFailure {
       return FlutterError(code: failure.code, message: failure.message, details: nil)
     }
+    // Full permission keeps the failing step and the errno: they are the only
+    // clue the user can look up, and the UI shows which step failed.
+    if let failure = error as? PrivilegeError {
+      return FlutterError(
+        code: "privilege_" + failure.stage, message: failure.message,
+        details: ["stage": failure.stage, "errno": Int(failure.errno), "detail": failure.detail] as [String: Any])
+    }
     return FlutterError(code: "ios_runtime_error", message: "iOS 本机运行时操作失败，请查看状态或重新打开 App。", details: nil)
+  }
+
+  /// The phase a full-permission request must not run under, or nil when the
+  /// engine is idle. One global mount table has no safe window under a live
+  /// guest task, so both mount and unmount refuse instead of racing it.
+  private func engineGeneration() -> String? {
+    let phase = native?.currentState()["phase"] as? String ?? "idle"
+    if ["starting", "running", "stopping"].contains(phase) { return phase }
+    if pending == "start" || queuedStart != nil { return "starting" }
+    return nil
+  }
+
+  /// `privilege: "full"` is the contract; a bare `true` is the same request.
+  private static func fullPrivilege(_ value: Any?) -> Bool {
+    if let text = value as? String { return text == "full" }
+    return value as? Bool ?? false
   }
 
   // MARK: State
@@ -1128,7 +1182,7 @@ final class EngineChannel: NSObject, FlutterStreamHandler {
 
   // MARK: Start and stop
 
-  private func start(env: [String: Any]?, phoneStorage: Bool, mode: String?, visualReplies: Bool) throws {
+  private func start(env: [String: Any]?, phoneStorage: Bool, mode: String?, visualReplies: Bool, privilege: Bool) throws {
     if phoneStorage {
       throw EngineFailure("ios_unsupported", "iOS 不提供全盘挂载，请用系统文件选择器导入或导出。")
     }
@@ -1139,6 +1193,9 @@ final class EngineChannel: NSObject, FlutterStreamHandler {
     let phase = native?.currentState()["phase"] as? String ?? "idle"
     if phase == "starting" || phase == "running" || pending == "start" { return }
     if pending != nil { throw EngineFailure("start_busy", "运行时正在安装。") }
+    // Set after the guards above: a start that is ignored or rejected does not
+    // change the mode. A queued start reads it when it finally begins.
+    privilegeOnStart = privilege
     if phase == "stopping" {
       // Started right after a stop: the Environment has to finish going away first.
       queuedStart = (environment, visualReplies)
@@ -1207,6 +1264,15 @@ final class EngineChannel: NSObject, FlutterStreamHandler {
       linuxSnapshot["protectedPaths"] = protectedPaths
       try native?.configureGuest(linuxSnapshot)
       native?.updateLifecycle(foreground: lifecycle.foreground, continued: lifecycle.continued)
+      // Full permission: one global guest mount table and no namespaces, so
+      // /host has to exist before the first guest task starts. A failure here
+      // fails the start instead of quietly dropping the permission.
+      if privilegeOnStart {
+        // The mount itself happens inside native begin, on the supervisor task.
+        // This only makes sure the point exists; a failure fails the start.
+        try PrivilegeBridge.createMountPoint(guestRoot: guestRoot)
+        appendLog("全权限：启动时挂载宿主根目录到 /host。", stream: "system")
+      }
       try native?.begin(
         runtime: installer.root.path, guest: guestRoot.path, home: dshHome.path, cache: cache.path,
         linuxDirectory: linuxDirectory.path, workspace: workspace.path, env: launchEnvironment)
@@ -1220,12 +1286,14 @@ final class EngineChannel: NSObject, FlutterStreamHandler {
       startPolling()
       startPhone()
     } catch {
+
       if let temporary = pendingGuestTemporary,
          case .retained(let reason) = temporary.beforeAcceptanceFailed() {
         _ = appendLog("Linux 临时目录保留（\(reason)）。", stream: "system")
       }
       retirePhone()
-      lastError = (error as? EngineFailure)?.message ?? "本机引擎启动失败。"
+      lastError =
+        (error as? EngineFailure)?.message ?? (error as? PrivilegeError)?.message ?? "本机引擎启动失败。"
       throw error
     }
   }

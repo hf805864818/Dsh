@@ -65,6 +65,10 @@ int dsh_guest_ack(uint64_t, int stream, uint64_t end_offset);
 // Sends TERM now, escalates to KILL after 200 ms; stale ids cannot hit a new job.
 int dsh_guest_cancel(uint64_t);
 int dsh_guest_kill(uint64_t);
+// Mounts the host root at /host on the next start when enabled (full-permission
+// sessions), unmounts it now when disabled. Returns EBUSY while a guest runs.
+int dsh_guest_set_host_mount(int enable);
+int dsh_guest_host_mounted(void);
 // Caller first wakes its blocked output callbacks to return ECANCELED. Marks
 // dropped output separately from ACK, closes stdin and requests cancellation.
 int dsh_guest_abandon(uint64_t);
