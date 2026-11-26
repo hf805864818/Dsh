@@ -274,21 +274,46 @@ private enum PrivilegeProbe {
   /// an iOS Mach-O dpkg has to be spawned by the App itself.
   private static func dpkgVersion(_ path: String) -> String? {
     guard FileManager.default.isExecutableFile(atPath: path) else { return nil }
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: path)
-    process.arguments = ["--version"]
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = pipe
-    do {
-      try process.run()
-    } catch {
-      return nil
+    // `Process` is macOS-only, so this goes through posix_spawn directly.
+    var fds: [Int32] = [-1, -1]
+    let piped = fds.withUnsafeMutableBufferPointer { buffer -> Int32 in
+      guard let base = buffer.baseAddress else { return -1 }
+      return pipe(base)
     }
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    process.waitUntilExit()
+    guard piped == 0 else { return nil }
+    defer {
+      if fds[0] >= 0 { close(fds[0]) }
+      if fds[1] >= 0 { close(fds[1]) }
+    }
+    var actions: posix_spawn_file_actions_t?
+    posix_spawn_file_actions_init(&actions)
+    defer { posix_spawn_file_actions_destroy(&actions) }
+    posix_spawn_file_actions_adddup2(&actions, fds[1], STDOUT_FILENO)
+    posix_spawn_file_actions_adddup2(&actions, fds[1], STDERR_FILENO)
+    var argv: [UnsafeMutablePointer<CChar>?] = [strdup(path), strdup("--version"), nil]
+    defer {
+      for case let pointer? in argv { free(pointer) }
+    }
+    var pid: pid_t = 0
+    let spawned = argv.withUnsafeMutableBufferPointer { buffer in
+      posix_spawn(&pid, path, &actions, nil, buffer.baseAddress, nil)
+    }
+    guard spawned == 0 else { return nil }
+    close(fds[1])
+    fds[1] = -1
+    var data = Data()
+    var chunk = [UInt8](repeating: 0, count: 256)
+    while true {
+      let count = chunk.withUnsafeMutableBytes { read(fds[0], $0.baseAddress, $0.count) }
+      if count <= 0 { break }
+      data.append(contentsOf: chunk[0..<count])
+      if data.count > 4096 { break }
+    }
+    var status: Int32 = 0
+    waitpid(pid, &status, 0)
     let text = String(decoding: data, as: UTF8.self)
-    return text.split(separator: "\n").first.map(String.init)
+    let line = text.split(separator: "\n").first.map(String.init) ?? ""
+    return line.isEmpty ? nil : line
   }
 
   /// First `dpkg --version` line among the paths that exist, or empty.
