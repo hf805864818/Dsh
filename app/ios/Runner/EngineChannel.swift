@@ -1438,6 +1438,16 @@ final class EngineChannel: NSObject, FlutterStreamHandler {
       retirePhone()
       lastError =
         (error as? EngineFailure)?.message ?? (error as? PrivilegeError)?.message ?? "本机引擎启动失败。"
+      // A start that asked for the host mount and failed must not stay armed:
+      // the flag lives here, so every later 启动 would retry the same failing
+      // mount and the engine would look broken until the app was restarted.
+      // Clear it, and the request in the guest kernel, so the next start is an
+      // ordinary one — then surface the original failure.
+      if privilegeOnStart {
+        privilegeOnStart = false
+        try? PrivilegeBridge.requestUnmount()
+        _ = appendLog("全权限启动失败：已清除全权限请求，下次启动为普通模式。", stream: "system")
+      }
       throw error
     }
   }

@@ -183,15 +183,20 @@ class PrivilegeController extends Notifier<PrivilegeView> {
       await _startEngine(privileged: true);
     } on PlatformException catch (error) {
       _fullAccessSessionId = null;
+      final stage = _stageOf(error);
+      final errno = _errnoOf(error);
+      final message = _messageOf(error);
+      await _recoverOrdinaryStart();
       state = state.copyWith(
         phase: PrivilegePhase.failed,
-        failureStage: _stageOf(error),
-        errno: _errnoOf(error),
-        message: _messageOf(error),
+        failureStage: stage,
+        errno: errno,
+        message: message,
       );
       return false;
     } catch (error) {
       _fullAccessSessionId = null;
+      await _recoverOrdinaryStart();
       state = state.copyWith(phase: PrivilegePhase.failed, failureStage: 'enable', message: '$error');
       return false;
     }
@@ -243,6 +248,27 @@ class PrivilegeController extends Notifier<PrivilegeView> {
     state = state.copyWith(phase: PrivilegePhase.privileged, clearFailure: true);
     // Same reason as in enable(): the row must stop claiming /host is mounted.
     await refreshProbe();
+  }
+
+  /// Puts the engine back into an ordinary start after a failed full-permission
+  /// switch. Without it the user is left with a stopped engine that will not
+  /// come back: the host still holds the privilege flag, so every later 启动
+  /// retries the same failing mount until the app is restarted.
+  ///
+  /// Best effort on purpose — the original failure is what gets reported, and a
+  /// recovery that also fails must not replace it.
+  Future<void> _recoverOrdinaryStart() async {
+    try {
+      await _methods.invokeMethod<void>('privilegeDisable');
+    } on Object {
+      // The flag may never have been set; nothing to clear.
+    }
+    try {
+      await _startEngine(privileged: false);
+    } on Object {
+      // Leaving the engine down is the state the user already saw; the failure
+      // sheet explains it and 启动 remains available.
+    }
   }
 
   /// Stops the engine and waits for it to leave `running`, as mounts are fixed
