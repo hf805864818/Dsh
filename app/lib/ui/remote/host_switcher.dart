@@ -7,6 +7,7 @@ import '../../l10n/l10n.dart';
 import '../../runtime/local_footprint.dart';
 import '../../runtime/runtime_state.dart';
 import '../../state/connection_state.dart';
+import '../../state/gateway_hosts.dart';
 import '../../state/hosts_state.dart';
 import '../common/app_sheet.dart';
 import '../common/sheet_title_bar.dart';
@@ -18,6 +19,8 @@ import '../theme/app_icons.dart';
 import '../theme/theme.dart';
 import 'host_key_dialog.dart';
 import 'host_status.dart';
+import 'gateway_pair_page.dart';
+import 'ssh_host_form.dart';
 
 /// Drawer-header chip: `● 本机 · 运行中 ⌄` / `● 电脑 · 已连接 ⌄`. Opens the
 /// host sheet.
@@ -84,6 +87,7 @@ class HostSheet extends ConsumerWidget {
     final l10n = context.l10n;
     final active = ref.watch(activeHostProvider);
     final ssh = ref.watch(hostsProvider.select((s) => s.ssh));
+    final gateways = ref.watch(gatewayHostsProvider.select((s) => s.hosts));
     final account = ref.watch(relayAccountProvider).value;
     final relayHosts = account?.signedIn == true ? account!.hosts : const <RelayHost>[];
 
@@ -148,6 +152,18 @@ class HostSheet extends ConsumerWidget {
                       relay: h,
                       onTap: () => pick(HostRef.relay(h.id, name: h.name)),
                     ),
+                  // Paired mobile gateways (dsh-plugin-mobile-gateway → /ws/mobile).
+                  // These used to live here; the 1.4 sync replaced this file with
+                  // the upstream copy and took the rows with it, which left
+                  // GatewayPairPage.open() unreachable.
+                  for (final g in gateways)
+                    _HostRow(
+                      host: HostRef.gateway(g.id, name: g.name),
+                      title: g.name,
+                      subtitle: '网关 · ${g.url}',
+                      active: active == HostRef.gateway(g.id, name: g.name),
+                      onTap: () => pick(HostRef.gateway(g.id, name: g.name)),
+                    ),
                 ],
               ),
               if (relayHosts.length > 1)
@@ -173,13 +189,43 @@ class HostSheet extends ConsumerWidget {
                     },
                   ),
                   SettingsTile(
-                    icon: ssh.isEmpty && relayHosts.isEmpty ? AppIcons.add : AppIcons.configure,
+                    icon: ssh.isEmpty && relayHosts.isEmpty && gateways.isEmpty ? AppIcons.add : AppIcons.configure,
                     tinted: false,
-                    title: ssh.isEmpty && relayHosts.isEmpty ? l10n.remoteConnectComputer : l10n.remoteManageHosts,
-                    subtitle: ssh.isEmpty && relayHosts.isEmpty ? l10n.remoteConnectionMethods : null,
-                    onTap: () {
-                      Navigator.of(context).pop();
-                      onManage();
+                    title: ssh.isEmpty && relayHosts.isEmpty && gateways.isEmpty
+                        ? l10n.remoteConnectComputer
+                        : l10n.remoteManageHosts,
+                    subtitle: ssh.isEmpty && relayHosts.isEmpty && gateways.isEmpty
+                        ? l10n.remoteConnectionMethods
+                        : null,
+                    onTap: () async {
+                      // Three ways to reach a computer, offered together: an SSH
+                      // host, a paired mobile gateway (pairing code), or the DSH
+                      // Remote account. The gateway half is the one the 1.4 sync
+                      // dropped from this sheet.
+                      final navigator = Navigator.of(context);
+                      final choice = await showAppSheet<_AddComputer>(
+                        context,
+                        builder: (sheet) => _AddComputerSheet(
+                          onManage: () => Navigator.of(sheet).pop(_AddComputer.remote),
+                          onPick: (value) => Navigator.of(sheet).pop(value),
+                        ),
+                      );
+                      if (choice == null) return;
+                      // Close the host sheet first: all three destinations are
+                      // full pages pushed on the same navigator.
+                      navigator.pop();
+                      switch (choice) {
+                        case _AddComputer.ssh:
+                          unawaited(navigator.push(
+                            MaterialPageRoute<void>(builder: (_) => const SshHostFormPage()),
+                          ));
+                        case _AddComputer.gateway:
+                          unawaited(navigator.push(
+                            MaterialPageRoute<bool>(builder: (_) => const GatewayPairPage()),
+                          ));
+                        case _AddComputer.remote:
+                          onManage();
+                      }
                     },
                   ),
                 ],
@@ -242,6 +288,57 @@ class _HostRow extends ConsumerWidget {
                 ],
               ),
         trailing: active ? Icon(AppIcons.selected, size: 20, color: scheme.primary) : const SizedBox(width: 20),
+      ),
+    );
+  }
+}
+
+/// The three ways this app reaches a computer, offered in one sheet so the
+/// gateway option is discoverable instead of buried in a page.
+enum _AddComputer { ssh, gateway, remote }
+
+class _AddComputerSheet extends StatelessWidget {
+  const _AddComputerSheet({required this.onManage, required this.onPick});
+
+  final VoidCallback onManage;
+  final ValueChanged<_AddComputer> onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      top: false,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const SheetTitleBar('连接电脑'),
+          SheetGroup(
+            margin: const EdgeInsets.fromLTRB(SheetTitleBar.inset, 0, SheetTitleBar.inset, 12),
+            children: [
+              SettingsTile(
+                icon: AppIcons.terminal,
+                tinted: false,
+                title: 'SSH 主机',
+                subtitle: '在电脑上跑 dsh web，用 SSH 连过去',
+                onTap: () => onPick(_AddComputer.ssh),
+              ),
+              SettingsTile(
+                icon: AppIcons.qrCode,
+                tinted: false,
+                title: '手机网关（配对码）',
+                subtitle: '电脑上装 dsh-plugin-mobile-gateway，粘贴配对码即可',
+                onTap: () => onPick(_AddComputer.gateway),
+              ),
+              SettingsTile(
+                icon: AppIcons.cloud,
+                tinted: false,
+                title: 'DSH Remote 账号',
+                subtitle: '登录后自动发现已绑定的电脑',
+                onTap: onManage,
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
