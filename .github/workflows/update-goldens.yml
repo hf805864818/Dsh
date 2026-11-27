@@ -24,6 +24,8 @@ concurrency:
 env:
   FLUTTER_VERSION: 3.47.7
   TZ: Asia/Shanghai
+  # The golden harness reads this; CI sets it at job level for the same reason.
+  DSH_TEST_FONT_DIR: /usr/share/fonts/opentype/noto
 
 jobs:
   update:
