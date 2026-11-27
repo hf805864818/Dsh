@@ -14,8 +14,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../runtime/runtime_bridge.dart';
-import '../runtime/runtime_state.dart';
 import 'privilege_probe.dart';
 
 /// Where the full-permission switch stands.
@@ -112,8 +110,6 @@ class PrivilegeController extends Notifier<PrivilegeView> {
   String? _fullAccessSessionId;
 
   /// Engine options the privileged start repeats, as the caller last knew them.
-  bool _phoneStorage = false;
-  bool _visualReplies = true;
 
   /// The conversation holding full permission, at most one at a time.
   String? get fullAccessSessionId => _fullAccessSessionId;
@@ -165,161 +161,27 @@ class PrivilegeController extends Notifier<PrivilegeView> {
       return false;
     }
 
-    // Ask the host whether this build can mount at all. A build that cannot must
-    // say so here rather than stopping the engine first: on the devices this
-    // shipped to, the mount hung the start and left the app frozen.
-    final support = await _methods.invokeMapMethod<String, Object?>('privilegeSupport');
-    if (support?['mount'] != true) {
-      _fullAccessSessionId = null;
-      state = state.copyWith(
-        phase: PrivilegePhase.failed,
-        failureStage: 'mount_disabled',
-        message: '当前构建已停用宿主挂载（它会卡住引擎启动），宿主文件访问改用原生直通，正在开发中。',
-      );
-      return false;
-    }
-
-    // No sandbox to lift: the preset alone switches the conversation.
-    if (!_hosted) {
-      _fullAccessSessionId = sessionId;
-      state = state.copyWith(phase: PrivilegePhase.enabled, clearFailure: true);
-      return true;
-    }
-
-    _phoneStorage = phoneStorage;
-    _visualReplies = visualReplies;
-    state = state.copyWith(phase: PrivilegePhase.enabling, clearFailure: true);
-    try {
-      if (!await _stopEngine()) {
-        throw PlatformException(code: 'privilege_engine_restart', message: '引擎没有停下，无法切换全权限');
-      }
-      await _methods.invokeMethod<void>('privilegeEnable');
-      await _startEngine(privileged: true);
-    } on PlatformException catch (error) {
-      _fullAccessSessionId = null;
-      final stage = _stageOf(error);
-      final errno = _errnoOf(error);
-      final message = _messageOf(error);
-      await _recoverOrdinaryStart();
-      state = state.copyWith(
-        phase: PrivilegePhase.failed,
-        failureStage: stage,
-        errno: errno,
-        message: message,
-      );
-      return false;
-    } catch (error) {
-      _fullAccessSessionId = null;
-      await _recoverOrdinaryStart();
-      state = state.copyWith(phase: PrivilegePhase.failed, failureStage: 'enable', message: '$error');
-      return false;
-    }
+    // No engine restart, ever. Enabling full permission used to stop the engine so
+    // the next start could mount the host root into the guest — and on device that
+    // start never came back, which froze the whole app. The mount is off now
+    // (`privilegeMountAvailable = false`), and host file access goes through the
+    // native `host_*` tools, which the engine already has. So this is a flag plus
+    // the danger-full-access preset the caller sends, and nothing else.
     _fullAccessSessionId = sessionId;
     state = state.copyWith(phase: PrivilegePhase.enabled, clearFailure: true);
-    // The engine has just restarted with the mount, so the cached probe is stale:
-    // 诊断 › 「宿主挂载」 reads that cache and would still say 未挂载 until someone
-    // tapped 重新探测. Ask again before reporting success.
-    await refreshProbe();
+    unawaited(refreshProbe());
     return true;
   }
 
-  /// Takes full permission away: stop the engine, let the host unmount, then
-  /// start it again as usual. A no-op (aside from settling the phase) when
-  /// nothing is enabled, so 停用 never restarts a healthy engine for nothing.
+  /// Takes full permission away. Nothing to unmount, because nothing was ever
+  /// mounted: this only clears the flag and settles the phase, so 停用 can never
+  /// restart (and never hang) a healthy engine.
   Future<void> disable() async {
-    if (state.phase == PrivilegePhase.enabling || state.phase == PrivilegePhase.disabling) return;
-    if (!_hosted) {
-      _fullAccessSessionId = null;
-      state = state.copyWith(phase: _probePhase(), clearFailure: true);
-      return;
-    }
-    if (_fullAccessSessionId == null && state.phase != PrivilegePhase.enabled) {
-      state = state.copyWith(phase: _probePhase(), clearFailure: true);
-      return;
-    }
-    state = state.copyWith(phase: PrivilegePhase.disabling, clearFailure: true);
-    try {
-      if (!await _stopEngine()) {
-        throw PlatformException(code: 'privilege_engine_restart', message: '引擎没有停下，无法关闭全权限');
-      }
-      await _methods.invokeMethod<void>('privilegeDisable');
-      await _startEngine(privileged: false);
-    } on PlatformException catch (error) {
-      _fullAccessSessionId = null;
-      state = state.copyWith(
-        phase: PrivilegePhase.failed,
-        failureStage: _stageOf(error),
-        errno: _errnoOf(error),
-        message: _messageOf(error),
-      );
-      return;
-    } catch (error) {
-      _fullAccessSessionId = null;
-      state = state.copyWith(phase: PrivilegePhase.failed, failureStage: 'disable', message: '$error');
-      return;
-    }
+    if (state.phase == PrivilegePhase.disabling) return;
     _fullAccessSessionId = null;
-    state = state.copyWith(phase: PrivilegePhase.privileged, clearFailure: true);
-    // Same reason as in enable(): the row must stop claiming /host is mounted.
-    await refreshProbe();
+    state = state.copyWith(phase: _probePhase(), clearFailure: true);
+    unawaited(refreshProbe());
   }
-
-  /// Puts the engine back into an ordinary start after a failed full-permission
-  /// switch. Without it the user is left with a stopped engine that will not
-  /// come back: the host still holds the privilege flag, so every later 启动
-  /// retries the same failing mount until the app is restarted.
-  ///
-  /// Best effort on purpose — the original failure is what gets reported, and a
-  /// recovery that also fails must not replace it.
-  Future<void> _recoverOrdinaryStart() async {
-    try {
-      await _methods.invokeMethod<void>('privilegeDisable');
-    } on Object {
-      // The flag may never have been set; nothing to clear.
-    }
-    try {
-      await _startEngine(privileged: false);
-    } on Object {
-      // Leaving the engine down is the state the user already saw; the failure
-      // sheet explains it and 启动 remains available.
-    }
-  }
-
-  /// Stops the engine and waits for it to leave `running`, as mounts are fixed
-  /// at launch. True when it is already down or went down; false when the stop
-  /// did not finish (the bound is on the UI wait, not on native cleanup).
-  Future<bool> _stopEngine() async {
-    bool stoppedNow() {
-      final phase = ref.read(localRuntimeProvider).status.phase;
-      return !phase.isBusy && phase != RuntimePhase.running;
-    }
-
-    if (stoppedNow()) return true;
-    final stopped = Completer<bool>();
-    final sub = ref.listen<RuntimePhase>(localRuntimeProvider.select((s) => s.status.phase), (_, next) {
-      if (!next.isBusy && next != RuntimePhase.running && !stopped.isCompleted) stopped.complete(true);
-    });
-    try {
-      if (stoppedNow()) return true;
-      if (ref.read(localRuntimeProvider).status.phase != RuntimePhase.stopping) {
-        await ref.read(localRuntimeProvider.notifier).stop();
-      }
-      if (stoppedNow()) return true;
-      return await stopped.future.timeout(const Duration(seconds: 20), onTimeout: () => false);
-    } finally {
-      sub.close();
-    }
-  }
-
-  /// Starts the engine again, with or without the host's full-permission
-  /// mounts. Nothing else about the start changes.
-  Future<void> _startEngine({required bool privileged}) => _methods.invokeMethod<void>('start', {
-    'env': const <String, String>{},
-    'phoneStorage': _phoneStorage,
-    'mode': null,
-    'visualReplies': _visualReplies,
-    if (privileged) 'privilege': 'full',
-  });
 
   /// The phase the last probe implies, for settling without an engine step.
   PrivilegePhase _probePhase() {

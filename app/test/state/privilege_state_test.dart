@@ -1,27 +1,22 @@
 // Full permission is a two-step feature: the probe says whether this build may
 // leave its container at all, and only then may one session be switched into
-// full permission, which the host performs. The controller is the single thing
-// the UI watches, so these tests pin exactly what the UI depends on:
+// full permission. Those tests pin exactly what the UI depends on:
 //
 //   * it never asks the host when the probe already said no (a request there
 //     can only end in privilege_mount, and the button must not be offered);
 //   * one session owns the mode at a time (a second enable is refused, not
 //     stacked);
-//   * a host failure becomes a phase with the stage and errno kept, so the UI
-//     can say which step failed instead of "未知错误";
-//   * disable returns to privileged and clears the owning session.
+//   * enabling never restarts the engine. It used to, so the next start could
+//     mount the host root into the guest — and on device that start never came
+//     back, which froze the whole App. The mount is off
+//     (`privilegeMountAvailable = false`) and host file access goes through the
+//     native `host_*` tools instead, so the switch is a flag: no stop, no start,
+//     no native call at all;
+//   * disable clears the owning session and settles back to the probe's phase.
 //
-// Written against the agreed interface (PrivilegePhase / PrivilegeView /
-// PrivilegeController + privilegeControllerProvider) because
-// lib/state/privilege_state.dart was still being implemented when this file
-// landed. Two adaptation points only: [_controllerOf] and [_viewOf].
-//
-// The host is a fake MethodChannel('dsh/runtime'): privilegeProbe answers the
-// probe payload, privilegeEnable / privilegeDisable answer whatever the test
-// set, and every method name is recorded so "did not call native" can be
-// asserted instead of assumed.
-
-import 'dart:async';
+// The host is a fake MethodChannel('dsh/runtime'): `privilegeProbe` answers the
+// probe payload and every method name is recorded, so "did not call native" is
+// asserted rather than assumed.
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -49,12 +44,6 @@ void main() {
   /// What `privilegeProbe` answers this test.
   late Map<String, Object?> probe;
 
-  /// What `privilegeEnable` answers, or throws, this test.
-  late Future<Object?> Function() enableReply;
-
-  /// What `privilegeDisable` answers, or throws, this test.
-  late Future<Object?> Function() disableReply;
-
   late ProviderContainer container;
 
   // A build whose signature lost no-sandbox: every candidate path failed, so
@@ -75,19 +64,9 @@ void main() {
     'detail': '可读容器外目录（2/4）',
   };
 
-  /// The mount step failing the way the host reports it: code carries the
-  /// stage, details carry the same stage plus the errno the syscall returned.
-  PlatformException mountFailure() => PlatformException(
-    code: 'privilege_mount',
-    message: 'mount failed',
-    details: <String, Object?>{'stage': 'mount', 'errno': 2, 'detail': 'dsh_root 挂载失败：No such file or directory'},
-  );
-
   setUp(() {
     calls = <String>[];
     probe = privilegedProbe;
-    enableReply = () async => <String, Object?>{'ok': true};
-    disableReply = () async => <String, Object?>{'ok': true};
     // The probe answers from a constant off iOS, so the platform has to claim
     // iOS for the whole enable path to be reachable.
     debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
@@ -96,15 +75,8 @@ void main() {
       calls.add(call.method);
       return switch (call.method) {
         'privilegeProbe' => Future<Object?>.value(probe),
-        // The implementation asks what the host can do before touching the
-        // engine, so the fake has to answer that too; assuming a mount is
-        // available keeps these tests about the switching logic itself.
-        'privilegeSupport' => Future<Object?>.value(<String, Object?>{'mount': true}),
-        'privilegeEnable' => enableReply(),
-        // The disable step's method name is the implementation's to choose;
-        // answering every other privilege method keeps this fake honest either
-        // way, and the assertions below only need "some mutation happened".
-        'privilegeDisable' => disableReply(),
+        // Anything else would be a host mutation, and these tests assert there
+        // are none.
         _ => Future<Object?>.value(null)
       };
     });
@@ -137,7 +109,7 @@ void main() {
     expect(controller.fullAccessSessionId, isNull);
   });
 
-  test('enabling from the privileged phase switches the session and keeps its id', () async {
+  test('enabling switches the session without touching the engine', () async {
     final controller = _controllerOf(container);
     await controller.refreshProbe();
     expect(_viewOf(container).phase, PrivilegePhase.privileged);
@@ -146,7 +118,12 @@ void main() {
     final enabled = await controller.enable('session-a');
 
     expect(enabled, isTrue);
-    expect(calls, contains('privilegeEnable'));
+    // The whole point of this test: the host was never asked to stop, mount or
+    // start anything. A restart here is what froze the App on device.
+    expect(mutations(), isEmpty, reason: '启用全权限不该让引擎停一次再起一次');
+    expect(calls, isNot(contains('start')));
+    expect(calls, isNot(contains('stop')));
+    expect(calls, isNot(contains('privilegeEnable')));
     expect(_viewOf(container).phase, PrivilegePhase.enabled);
     expect(_viewOf(container).active, isTrue);
     expect(controller.fullAccessSessionId, 'session-a');
@@ -154,71 +131,16 @@ void main() {
     expect(_viewOf(container).errno, isNull);
   });
 
-  test('an in-flight enable is observable as enabling, then lands on enabled', () async {
-    // The phase is the only thing that greys out the switch, and "stuck in
-    // enabling" is the failure mode a restart can produce, so both edges are
-    // pinned here rather than left to the UI test.
-    final gate = Completer<void>();
-    enableReply = () async {
-      await gate.future;
-      return <String, Object?>{'ok': true};
-    };
+  test('enabling lands on enabled in a single step, never on enabling', () async {
+    // "Stuck in enabling" is the failure mode the old restart produced, so the
+    // phase the UI watches must settle immediately.
     final controller = _controllerOf(container);
     await controller.refreshProbe();
 
     final enabling = controller.enable('session-a');
-    for (var i = 0; i < 8; i++) {
-      await Future<void>.delayed(Duration.zero);
-    }
-    expect(_viewOf(container).phase, PrivilegePhase.enabling);
-    expect(_viewOf(container).active, isFalse);
 
-    gate.complete();
     expect(await enabling, isTrue);
     expect(_viewOf(container).phase, PrivilegePhase.enabled);
-  });
-
-  test('a mount failure keeps the stage and the errno for the UI', () async {
-    enableReply = () async => throw mountFailure();
-    final controller = _controllerOf(container);
-    await controller.refreshProbe();
-
-    final enabled = await controller.enable('session-a');
-
-    expect(enabled, isFalse);
-    expect(_viewOf(container).phase, PrivilegePhase.failed);
-    expect(_viewOf(container).failureStage, 'mount');
-    expect(_viewOf(container).errno, 2, reason: 'errno 是用户唯一能拿去查的线索（EPERM 还是 ENOENT）');
-    expect(_viewOf(container).message, isNotNull);
-    expect(controller.fullAccessSessionId, isNull, reason: '挂载失败后不该留下一个“已开通”的会话 id');
-  });
-
-  test('a host failure without details still leaves failed, not enabling', () async {
-    enableReply = () async => throw PlatformException(code: 'privilege_enable');
-    final controller = _controllerOf(container);
-    await controller.refreshProbe();
-
-    final enabled = await controller.enable('session-a');
-
-    expect(enabled, isFalse);
-    expect(_viewOf(container).phase, PrivilegePhase.failed, reason: '相位卡在 enabling 会让按钮永久禁用');
-    expect(controller.fullAccessSessionId, isNull);
-  });
-
-  test('a failed enable can be retried with the same session and clears the old failure', () async {
-    enableReply = () async => throw mountFailure();
-    final controller = _controllerOf(container);
-    await controller.refreshProbe();
-    expect(await controller.enable('session-a'), isFalse);
-    expect(_viewOf(container).phase, PrivilegePhase.failed);
-
-    enableReply = () async => <String, Object?>{'ok': true};
-    expect(await controller.enable('session-a'), isTrue);
-
-    expect(_viewOf(container).phase, PrivilegePhase.enabled);
-    expect(_viewOf(container).failureStage, isNull, reason: '重试成功还留着上次的 stage，UI 会一直显示旧错误');
-    expect(_viewOf(container).errno, isNull);
-    expect(controller.fullAccessSessionId, 'session-a');
   });
 
   test('a second session cannot take over an enabled one', () async {
@@ -231,7 +153,7 @@ void main() {
     expect(again, isFalse);
     expect(controller.fullAccessSessionId, 'session-a', reason: '同一时刻只能有一个会话持有全权限');
     expect(_viewOf(container).phase, PrivilegePhase.enabled);
-    expect(mutations().where((String method) => method == 'privilegeEnable'), hasLength(1), reason: '第二次点击不该再拆装一次挂载');
+    expect(mutations(), isEmpty, reason: '第二次点击不该再碰宿主机');
   });
 
   test('disabling returns to the privileged phase and clears the session id', () async {
@@ -245,7 +167,9 @@ void main() {
     expect(_viewOf(container).phase, PrivilegePhase.privileged);
     expect(_viewOf(container).active, isFalse);
     expect(controller.fullAccessSessionId, isNull);
-    expect(mutations(), isNotEmpty, reason: '卸载同样要落到宿主机，否则 dsh_root 会留在挂载表里');
+    // Nothing was mounted, so there is nothing to unmount: a restart here would
+    // be the same freeze the enable path used to have.
+    expect(mutations(), isEmpty, reason: '没有挂载过，就不该为了卸载重启引擎');
   });
 
   test('disabling while nothing is enabled leaves the phase alone', () async {

@@ -746,7 +746,11 @@ final class EngineChannel: NSObject, FlutterStreamHandler {
   /// thread with a five second deadline and the start continues without `/host`
   /// when that deadline passes, so the worst case is a staged failure instead of
   /// a frozen app.
-  private static let privilegeMountAvailable = true
+  // The host mount is off. `dsh_bound_mount` hung the guest start on device every
+  // time it was tried, and a five second deadline only turned "frozen" into "frozen
+  // for five seconds then no host". Host file access now goes through the native
+  // `host_*` tools (host_fs_binding.cc), which never involve the guest.
+  private static let privilegeMountAvailable = false
 
   private var privilegeOnStart = false
   private var initialized = false
