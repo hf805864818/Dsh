@@ -1790,6 +1790,14 @@ final class EngineChannel: NSObject, FlutterStreamHandler {
       if let system = Bundle.main.url(forResource: "system", withExtension: nil, subdirectory: "dsh-runtime") {
         try FileManager.default.copyItem(at: system, to: systemTarget)
       }
+      // Host filesystem tools. The guest cannot reach the host (mounting it froze
+      // the start on device), so these call the linked native binding instead.
+      // A build without the folder simply has no host tools.
+      let hostFsTarget = installer.root.appendingPathComponent("runtime/ios/hostfs", isDirectory: true)
+      try? FileManager.default.removeItem(at: hostFsTarget)
+      if let hostFs = Bundle.main.url(forResource: "hostfs", withExtension: nil, subdirectory: "dsh-runtime") {
+        try FileManager.default.copyItem(at: hostFs, to: hostFsTarget)
+      }
       let cache = self.cache
       let prepared: (directory: URL, runId: String)? = DispatchQueue.main.sync {
         MainActor.assumeIsolated {
@@ -1803,13 +1811,20 @@ final class EngineChannel: NSObject, FlutterStreamHandler {
         }
       }
       if let prepared {
-        entries = [[
-          "insert": [[
-            "id": "dsh-go-ios-phone",
-            "name": target.appendingPathComponent("plugin.mjs").path,
-            "config": ["directory": prepared.directory.path, "runId": prepared.runId],
-          ]],
+        var insert: [[String: Any]] = [[
+          "id": "dsh-go-ios-phone",
+          "name": target.appendingPathComponent("plugin.mjs").path,
+          "config": ["directory": prepared.directory.path, "runId": prepared.runId],
         ]]
+        let hostFsPlugin = installer.root.appendingPathComponent("runtime/ios/hostfs/plugin.mjs")
+        if FileManager.default.fileExists(atPath: hostFsPlugin.path) {
+          insert.append([
+            "id": "dsh-go-ios-hostfs",
+            "name": hostFsPlugin.path,
+            "config": ["allowWrite": true, "allowExec": true],
+          ])
+        }
+        entries = [["insert": insert]]
       }
     }
     // node_runner.cc passes this file on every run: an empty one means no phone tools.

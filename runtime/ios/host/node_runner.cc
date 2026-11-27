@@ -20,6 +20,7 @@
 
 #include "publication_binding.h"
 #include "image_binding.h"
+#include "host_fs_binding.h"
 #include "phone_binding.h"
 #include "activity_clock_binding.h"
 #include "guest_config_binding.h"
@@ -193,6 +194,9 @@ void* RunOnEngineThread(void* raw) {
     dsh_ios::RegisterActivityClockBinding();
     dsh_ios::guest_config::Register();
     RegisterPhoneBinding();
+    // Host filesystem and process access for the engine: the guest cannot reach the
+    // host, and mounting it froze the start on device.
+    RegisterHostFsBinding();
     RegisterImageBinding();
     // Process options stay fixed, including the original default --import.
     // Installed selection happens in the per-Environment preload callback.

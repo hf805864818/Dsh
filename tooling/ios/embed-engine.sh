@@ -87,6 +87,13 @@ if [ -d "$ROOT/runtime/ios/system" ]; then
     cp "$ROOT/runtime/ios/system/$file" "$RESOURCES/dsh-runtime/system/"
   done
 fi
+# Host filesystem tools: plain JS over the linked dsh_ios_hostfs binding.
+if [ -d "$ROOT/runtime/ios/hostfs" ]; then
+  mkdir -p "$RESOURCES/dsh-runtime/hostfs"
+  for file in plugin.mjs catalog.json; do
+    cp "$ROOT/runtime/ios/hostfs/$file" "$RESOURCES/dsh-runtime/hostfs/"
+  done
+fi
 
 if [ "${CODE_SIGNING_ALLOWED:-YES}" = "NO" ] || [ -z "${EXPANDED_CODE_SIGN_IDENTITY:-}" ]; then
   exit 0
