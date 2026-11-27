@@ -96,6 +96,10 @@ void main() {
       calls.add(call.method);
       return switch (call.method) {
         'privilegeProbe' => Future<Object?>.value(probe),
+        // The implementation asks what the host can do before touching the
+        // engine, so the fake has to answer that too; assuming a mount is
+        // available keeps these tests about the switching logic itself.
+        'privilegeSupport' => Future<Object?>.value(<String, Object?>{'mount': true}),
         'privilegeEnable' => enableReply(),
         // The disable step's method name is the implementation's to choose;
         // answering every other privilege method keeps this fake honest either
