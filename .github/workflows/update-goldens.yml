@@ -76,8 +76,7 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          # `**` needs git's glob magic; a plain pathspec treats it literally.
-          git add -A -- ':(glob)app/test/**/goldens'
+          git add -A -- app/test
           if git diff --cached --quiet; then
             echo "no golden changed"
             exit 0
