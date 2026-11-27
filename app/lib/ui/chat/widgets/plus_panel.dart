@@ -440,6 +440,15 @@ class _SessionPermissionPageState extends ConsumerState<SessionPermissionPage> {
         setState(() => _picked = commandOk ? value : null);
         return;
       }
+      // Enabled. The preset ran at the top of this branch, so fall through no
+      // further: the shared tail below sends `/permission $value` again, and one
+      // tap must send it once.
+      setState(() {
+        _busy = false;
+        _picked = commandOk ? value : null;
+      });
+      if (!commandOk) _toast('权限命令没有生效，请重试');
+      return;
     } else if (privilege.fullAccessSessionId == widget.sessionId) {
       // Leaving 完全权限 takes the mounts down with the preset.
       await privilege.disable();
