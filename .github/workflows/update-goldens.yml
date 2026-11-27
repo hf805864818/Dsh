@@ -38,6 +38,24 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
+      # The golden harness needs the same CJK + emoji fonts CI installs; without
+      # NotoSansCJK-Light.ttc it refuses to load the test at all.
+      - name: Install the test fonts
+        env:
+          DSH_TEST_FONT_DIR: /usr/share/fonts/opentype/noto
+          NOTO_CJK_VERSION: 1:20230817+repack1-3
+          NOTO_EMOJI_VERSION: v2.051
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          apt-get download fonts-noto-cjk="$NOTO_CJK_VERSION" fonts-noto-cjk-extra="$NOTO_CJK_VERSION"
+          for deb in fonts-noto-cjk*.deb; do dpkg-deb -x "$deb" unpacked; done
+          mkdir -p ~/test-fonts
+          cp unpacked/usr/share/fonts/opentype/noto/NotoSansCJK-{Regular,Bold,Light}.ttc ~/test-fonts/
+          curl -fsSL --retry 3 -o ~/test-fonts/NotoColorEmoji.ttf "https://raw.githubusercontent.com/googlefonts/noto-emoji/$NOTO_EMOJI_VERSION/fonts/NotoColorEmoji.ttf"
+          sudo install -Dm644 -t "$DSH_TEST_FONT_DIR" ~/test-fonts/NotoSansCJK-*.ttc
+          sudo install -Dm644 ~/test-fonts/NotoColorEmoji.ttf /usr/share/fonts/noto/NotoColorEmoji.ttf
       - name: Resolve dependencies
         working-directory: app
         run: flutter pub get --enforce-lockfile
