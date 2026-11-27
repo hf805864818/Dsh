@@ -398,10 +398,15 @@ class _SessionPermissionPageState extends ConsumerState<SessionPermissionPage> {
     final view = ref.read(privilegeControllerProvider);
 
     if (value == _fullAccess) {
-      // The host mounts its own root at /host for this: without a re-signed build
-      // there is nothing to switch to, and enable() names the missing step
-      // (probe_denied) instead of failing at the mount.
+      // 完全权限 is two things and they are independent: the DSH preset (no
+      // approval prompts) and, where the build supports it, the host root mounted
+      // at /host. The preset is the part this panel has always run, so it runs
+      // first — a host that cannot mount must not leave the conversation without
+      // the permission it did ask for and does get.
       setState(() => _busy = true);
+      final commandOk = await ref.read(chatProvider(widget.sessionId).notifier).runCommand('/permission $value');
+      if (!mounted) return;
+      ref.invalidate(permissionStateProvider(widget.sessionId));
       final settings = ref.read(settingsProvider);
       final enabled = await privilege.enable(
         widget.sessionId,
@@ -415,6 +420,10 @@ class _SessionPermissionPageState extends ConsumerState<SessionPermissionPage> {
         if (failed.phase == PrivilegePhase.sandboxed) {
           // Not re-signed: the sheet names that step (probe_denied).
           await showPrivilegeFailureSheet(context, stage: 'probe_denied', message: failed.message);
+        } else if (failed.failureStage == 'mount_disabled') {
+          // The preset is on; only the host mount is unavailable. Say so once,
+          // without blocking, and leave the conversation usable.
+          _toast(failed.message ?? '宿主挂载在当前构建中不可用，已按普通模式继续');
         } else if (failed.failureStage case final stage?) {
           final choice = await showPrivilegeFailureSheet(
             context,
@@ -427,6 +436,8 @@ class _SessionPermissionPageState extends ConsumerState<SessionPermissionPage> {
           // Another conversation owns the mode; there is nothing to retry.
           _toast(failed.message ?? '请先结束当前全权限会话');
         }
+        if (!commandOk) _toast('权限命令没有生效，请重试');
+        setState(() => _picked = commandOk ? value : null);
         return;
       }
     } else if (privilege.fullAccessSessionId == widget.sessionId) {
