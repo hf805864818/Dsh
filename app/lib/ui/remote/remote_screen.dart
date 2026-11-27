@@ -18,6 +18,7 @@ import '../common/app_dialog.dart';
 import '../common/ask_ai.dart';
 import '../common/overview_card.dart';
 import '../common/status_chip.dart';
+import '../common/list_page_row.dart';
 import '../settings/settings_widgets.dart';
 import '../shell/page_frame.dart';
 import '../theme/app_icons.dart';
@@ -183,10 +184,12 @@ class _RemoteScreenState extends ConsumerState<RemoteScreen> {
           title: '手机网关',
           footer: const Text('电脑上装好 dsh-plugin-mobile-gateway 并启动，然后粘贴它给出的配对码。'),
           children: [
+            // ListPageRow, not SettingsTile: every SettingsTile belongs to the
+            // settings index and must carry a `spot`, and this page's gateway
+            // rows are section content, not search destinations.
             for (final g in ref.watch(gatewayHostsProvider.select((s) => s.hosts)))
-              SettingsTile(
+              ListPageRow(
                 icon: AppIcons.cloud,
-                tinted: false,
                 title: g.name,
                 subtitle: '网关 · ${g.url}',
                 trailing: active == HostRef.gateway(g.id, name: g.name)
@@ -194,9 +197,8 @@ class _RemoteScreenState extends ConsumerState<RemoteScreen> {
                     : null,
                 onTap: () => unawaited(_use(HostRef.gateway(g.id, name: g.name))),
               ),
-            SettingsTile(
+            ListPageRow(
               icon: AppIcons.add,
-              tinted: false,
               title: '添加手机网关（配对码）',
               subtitle: '不经第三方账号，直连自己电脑上的网关',
               onTap: () => unawaited(GatewayPairPage.open(context)),
