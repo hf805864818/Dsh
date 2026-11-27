@@ -89,7 +89,7 @@
         },
         "cwd": {
           "type": "string",
-          "description": "工作目录，可省略"
+          "description": "iOS 上不支持，传了会直接报错；请改用绝对路径"
         },
         "timeoutMs": {
           "type": "integer",

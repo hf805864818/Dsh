@@ -338,6 +338,14 @@ napi_value Exec(napi_env env, napi_callback_info info) {
     }
   }
 
+  // iOS has no `posix_spawn_file_actions_addchdir_np`, so a working directory
+  // cannot be set for the child. Refusing is clearer than silently running in the
+  // App's own directory: a caller that asked for `cwd` is probably about to use
+  // relative paths.
+  if (!cwd.empty()) {
+    return Throw(env, "ERR_HOST_EXEC_CWD", "exec: cwd is not supported on iOS; use absolute paths");
+  }
+
   int out_pipe[2] = {-1, -1};
   int err_pipe[2] = {-1, -1};
   if (pipe(out_pipe) != 0 || pipe(err_pipe) != 0) {
@@ -351,7 +359,7 @@ napi_value Exec(napi_env env, napi_callback_info info) {
   posix_spawn_file_actions_addclose(&actions, err_pipe[0]);
   posix_spawn_file_actions_addclose(&actions, out_pipe[1]);
   posix_spawn_file_actions_addclose(&actions, err_pipe[1]);
-  if (!cwd.empty()) posix_spawn_file_actions_addchdir_np(&actions, cwd.c_str());
+
 
   std::vector<char*> argv;
   argv.reserve(storage.size() + 2);

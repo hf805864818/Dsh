@@ -18,7 +18,7 @@ const CATALOG = new URL('./catalog.json', import.meta.url);
 
 // The catalog is hashed so a partially updated install fails loudly at start
 // instead of offering a tool the runtime cannot honour.
-const catalogSha256 = '65df1c7d8ab7ae9703ba79208efc7040a6208d72d5b0d75376a2bfa2a0a51c56';
+const catalogSha256 = 'ef8eda379e50324236b929f457d348e02c2671dfa962e0209e06c737f435571a';
 
 /** Directories `host_exec` may run from. A shell is not one of them. */
 const EXEC_DIRECTORIES = ['/bin/', '/usr/bin/', '/usr/sbin/', '/sbin/', '/usr/local/bin/', '/var/jb/usr/bin/', '/var/jb/bin/', '/var/jb/usr/sbin/'];
@@ -52,7 +52,7 @@ export function checkExec(path, argv) {
 export async function apply(ctx, config) {
   const bytes = await readFile(CATALOG);
   const digest = createHash('sha256').update(bytes).digest('hex');
-  if (catalogSha256 !== '65df1c7d8ab7ae9703ba79208efc7040a6208d72d5b0d75376a2bfa2a0a51c56' && digest !== catalogSha256) {
+  if (digest !== catalogSha256) {
     throw new Error(`iOS host filesystem catalog SHA256 mismatch (${digest})`);
   }
   const catalog = JSON.parse(bytes);
