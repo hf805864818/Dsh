@@ -317,6 +317,27 @@ private enum PrivilegeProbe {
   }
 
   /// First `dpkg --version` line among the paths that exist, or empty.
+  /// What the plugin itself found when the engine loaded it: `ok:true, count:N` when
+  /// the binding listed the Documents folder, or the error it hit. Empty when the
+  /// plugin never ran, which is a different problem from "it ran and failed".
+  static func hostToolsRuntime() -> String {
+    let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+      ?? URL(fileURLWithPath: NSTemporaryDirectory())
+    let report = base.appendingPathComponent("runtime/rootfs/root/.dsh/host-tools.json")
+    guard let data = try? Data(contentsOf: report),
+          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+      return ""
+    }
+    let stage = json["stage"] as? String ?? "?"
+    if let selftest = json["selftest"] as? [String: Any], selftest["ok"] as? Bool == true {
+      return "宿主可读（/var/mobile/Documents 共 \(selftest["count"] as? Int ?? 0) 项）"
+    }
+    if let selftest = json["selftest"] as? [String: Any], let error = selftest["error"] as? String {
+      return "工具已载入但读不到：\(error)"
+    }
+    if let error = json["error"] as? String { return "载入失败（\(stage)）：\(error)" }
+    return "已载入（\(stage)），未留下自检结果"
+  }
   /// `1.4.0b7` — the short version plus the build number the CI bumped.
   static func appVersionText() -> String {
     let info = Bundle.main.infoDictionary
@@ -390,6 +411,7 @@ private enum PrivilegeProbe {
       // two installs of the same base are never mistaken for one another.
       "appVersion": Self.appVersionText(),
       "hostTools": hostToolsInjected(),
+      "hostToolsRun": hostToolsRuntime(),
       "hostToolsDetail": hostToolsState().detail,
       "dpkgVersion": firstDpkgVersion(bootstrap),
       "detail": sandboxed
@@ -1838,7 +1860,12 @@ final class EngineChannel: NSObject, FlutterStreamHandler {
         insert.append([
           "id": "dsh-go-ios-hostfs",
           "name": hostFsTarget.appendingPathComponent("plugin.mjs").path,
-          "config": ["allowWrite": true, "allowExec": true],
+          "config": [
+            "allowWrite": true, "allowExec": true,
+            // The plugin writes what it found here; Diagnostics reads it, so
+            // "loaded but broken" cannot look like "not loaded".
+            "selftestPath": dshHome.appendingPathComponent("host-tools.json").path,
+          ],
         ])
       }
     }

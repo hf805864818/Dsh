@@ -23,6 +23,7 @@ class PrivilegeStatus {
     this.hostTools = false,
     this.hostToolsDetail = '',
     this.appVersion = '',
+    this.hostToolsRun = '',
   });
 
   /// True when no candidate path outside the container could be read.
@@ -70,6 +71,9 @@ class PrivilegeStatus {
   /// 1.4.0b7: base version plus the CI-bumped build number.
   final String appVersion;
 
+  /// What the plugin found when the engine loaded it (empty when it never ran).
+  final String hostToolsRun;
+
   static const PrivilegeStatus unknown = PrivilegeStatus(
     sandboxed: true,
     readable: <String>[],
@@ -102,6 +106,7 @@ class PrivilegeStatus {
     hostTools: map['hostTools'] == true,
     hostToolsDetail: map['hostToolsDetail'] is String ? map['hostToolsDetail'] as String : '',
     appVersion: map['appVersion'] is String ? map['appVersion'] as String : '',
+    hostToolsRun: map['hostToolsRun'] is String ? map['hostToolsRun'] as String : '',
       bootstrap: <String>[
         if (map['bootstrap'] case final List list)
           for (final value in list)

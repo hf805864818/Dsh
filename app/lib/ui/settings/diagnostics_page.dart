@@ -290,6 +290,10 @@ class _PrivilegeSectionState extends ConsumerState<_PrivilegeSection> {
                 ? '已注入（host_list / host_read / host_write / host_stat / host_exec）'
                 : '未注入 — ${probe.hostToolsDetail.isEmpty ? '引擎没收到 hostfs 插件' : probe.hostToolsDetail}',
           ),
+        // Written by the plugin itself when the engine loaded it: the difference
+        // between "the file was copied" and "this process can reach the host".
+        if (status case final probe? when probe.hostToolsRun.isNotEmpty)
+          InfoRow(label: '宿主自检', value: probe.hostToolsRun),
         if (status case final probe? when probe.layout.isNotEmpty)
           InfoRow(label: '越狱布局', value: probe.layout),
         if (status case final probe?)
