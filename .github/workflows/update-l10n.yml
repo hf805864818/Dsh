@@ -1,0 +1,65 @@
+# Regenerates the localization output and commits it back.
+#
+# CI checks that `app/lib/l10n/gen` matches what `flutter gen-l10n` produces from the
+# ARB sources; when it does not, the diff is a whole-file rewrite and the failure says
+# nothing about which side is wrong. This runs the same two steps CI runs and commits
+# the result, so the repository holds the canonical generated files.
+#
+# Dispatch-only, writes only under `app/lib/l10n/`, and refuses anything else.
+name: Update l10n
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-l10n-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FLUTTER_VERSION: 3.47.7
+  TZ: Asia/Shanghai
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4.2.2
+        with:
+          persist-credentials: true
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Merge the ARB sources
+        run: python3 tool/l10n_merge.py
+      - name: Resolve dependencies
+        run: flutter pub get --enforce-lockfile
+      - name: Regenerate
+        run: flutter gen-l10n
+      - name: Commit only the generated l10n
+        working-directory: .
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A -- app/lib/l10n
+          if git diff --cached --quiet; then
+            echo "no l10n change"
+            exit 0
+          fi
+          outside=$(git diff --cached --name-only | grep -v -E '^app/lib/l10n/' || true)
+          if [ -n "$outside" ]; then
+            echo "refusing to commit files outside app/lib/l10n:" >&2
+            echo "$outside" >&2
+            exit 1
+          fi
+          git commit -m "chore(l10n): regenerate from the ARB sources"
+          git push

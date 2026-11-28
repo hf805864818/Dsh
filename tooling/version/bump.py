@@ -48,6 +48,24 @@ def write(path: Path, base: str, build: int) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+# The App reads its version from a compile-time constant, with the pubspec value as
+# the fallback; `tooling/test_build_number.py` asserts the two agree, so both move.
+APP_INFO = re.compile(r"(DSH_APP_VERSION', defaultValue: ')([^']+)(')")
+APP_INFO_PATH = Path("app/lib/state/app_info.dart")
+
+
+def write_app_info(path: Path, base: str, build: int) -> None:
+    if not path.exists():
+        raise SystemExit(f"{path}: missing, so the App would keep the old version")
+    text = path.read_text(encoding="utf-8")
+    if not APP_INFO.search(text):
+        raise SystemExit(f"{path}: no DSH_APP_VERSION default to update")
+    path.write_text(
+        APP_INFO.sub(lambda m: f"{m.group(1)}{base}+{build}{m.group(3)}", text, count=1),
+        encoding="utf-8",
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--pubspec", default="app/pubspec.yaml")
@@ -67,6 +85,7 @@ def main() -> int:
         base = args.set_base
     build = 1 if args.reset else build + 1
     write(path, base, build)
+    write_app_info(APP_INFO_PATH, base, build)
     print(f"{base}+{build}  → 显示为 {base}b{build}")
     return 0
 
