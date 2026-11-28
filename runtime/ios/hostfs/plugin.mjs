@@ -144,17 +144,31 @@ export async function apply(ctx, config) {
       for (const dispose of disposers) dispose();
     });
 
-    // What the Diagnostics page reads: proof that this process can reach the host,
-    // not just that a file was copied.
-    let selftest = { ok: false, error: `宿主原生绑定不可用（${nativeProblem ?? '未链接'}）` };
-    if (native) {
+    // What the Diagnostics page reads: not just "a file was copied", and not just one
+    // probe. `list` on /var/mobile/Documents came back EPERM while `stat` on the same
+    // path works in the App process, which means the two are gated differently — so
+    // the report runs each verb separately and names the one that failed.
+    const checks = [];
+    const probe = (label, run) => {
       try {
-        const entries = native.list('/var/mobile/Documents');
-        selftest = { ok: true, count: entries.length, sample: entries.slice(0, 5).map((entry) => entry.name) };
+        checks.push({ label, ok: true, detail: String(run()) });
       } catch (error) {
-        selftest = { ok: false, error: String(error?.message ?? error) };
+        checks.push({ label, ok: false, detail: String(error?.message ?? error) });
       }
+    };
+    if (!native) {
+      checks.push({ label: 'binding', ok: false, detail: `不可用（${nativeProblem ?? '未链接'}）` });
+    } else {
+      probe('stat /var/mobile/Documents', () => native.stat('/var/mobile/Documents').kind);
+      probe('list /var/mobile/Documents', () => `${native.list('/var/mobile/Documents').length} 项`);
+      if (config?.appDocuments) probe('list 本 App Documents', () => `${native.list(config.appDocuments).length} 项`);
+      probe('read /etc/hosts', () => `${native.read('/etc/hosts', 64).bytes} 字节`);
+      probe('list /var/mobile/Media', () => `${native.list('/var/mobile/Media').length} 项`);
     }
+    const selftest = {
+      ok: checks.every((check) => check.ok),
+      checks,
+    };
     await record({ stage: 'ready', ok: true, tools: Object.keys(handlers).length, selftest });
   } catch (error) {
     await record({ stage: 'failed', ok: false, error: String(error?.message ?? error) });

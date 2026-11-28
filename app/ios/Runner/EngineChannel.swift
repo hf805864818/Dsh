@@ -329,11 +329,17 @@ private enum PrivilegeProbe {
       return ""
     }
     let stage = json["stage"] as? String ?? "?"
-    if let selftest = json["selftest"] as? [String: Any], selftest["ok"] as? Bool == true {
-      return "宿主可读（/var/mobile/Documents 共 \(selftest["count"] as? Int ?? 0) 项）"
-    }
-    if let selftest = json["selftest"] as? [String: Any], let error = selftest["error"] as? String {
-      return "工具已载入但读不到：\(error)"
+    if let selftest = json["selftest"] as? [String: Any] {
+      if let checks = selftest["checks"] as? [[String: Any]] {
+        return checks.map { check -> String in
+          let label = check["label"] as? String ?? "?"
+          let ok = check["ok"] as? Bool == true
+          let detail = check["detail"] as? String ?? ""
+          return "\(ok ? "✅" : "❌") \(label)：\(detail)"
+        }.joined(separator: "　")
+      }
+      if selftest["ok"] as? Bool == true { return "宿主可读" }
+      if let error = selftest["error"] as? String { return "工具已载入但读不到：\(error)" }
     }
     if let error = json["error"] as? String { return "载入失败（\(stage)）：\(error)" }
     return "已载入（\(stage)），未留下自检结果"
@@ -1865,6 +1871,9 @@ final class EngineChannel: NSObject, FlutterStreamHandler {
             // The plugin writes what it found here; Diagnostics reads it, so
             // "loaded but broken" cannot look like "not loaded".
             "selftestPath": dshHome.appendingPathComponent("host-tools.json").path,
+            // A control path: this App's own Documents. If listing that works while
+            // /var/mobile/Documents does not, the difference is permission, not code.
+            "appDocuments": filesDirectory.appendingPathComponent("Documents", isDirectory: true).path,
           ],
         ])
       }
