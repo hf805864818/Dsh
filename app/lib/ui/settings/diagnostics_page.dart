@@ -268,6 +268,8 @@ class _PrivilegeSectionState extends ConsumerState<_PrivilegeSection> {
     return SettingsSection(
       title: '全权限（宿主目录）',
       children: [
+        if (status case final probe? when probe.appVersion.isNotEmpty)
+          InfoRow(label: '版本', value: probe.appVersion),
         InfoRow(label: '签名状态', value: phaseText),
         if (view.message case final message? when message.isNotEmpty) InfoRow(label: '说明', value: message),
         if (status case final probe? when probe.readable.isNotEmpty)

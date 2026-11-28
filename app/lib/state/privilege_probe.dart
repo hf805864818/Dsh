@@ -22,6 +22,7 @@ class PrivilegeStatus {
     this.hostMountKnown = true,
     this.hostTools = false,
     this.hostToolsDetail = '',
+    this.appVersion = '',
   });
 
   /// True when no candidate path outside the container could be read.
@@ -66,6 +67,9 @@ class PrivilegeStatus {
   /// plugin=有 patch条目=无 — which half of the wiring was found.
   final String hostToolsDetail;
 
+  /// 1.4.0b7: base version plus the CI-bumped build number.
+  final String appVersion;
+
   static const PrivilegeStatus unknown = PrivilegeStatus(
     sandboxed: true,
     readable: <String>[],
@@ -97,6 +101,7 @@ class PrivilegeStatus {
       hostMountKnown: map['hostMount'] is String && map['hostMount'] != 'unknown',
     hostTools: map['hostTools'] == true,
     hostToolsDetail: map['hostToolsDetail'] is String ? map['hostToolsDetail'] as String : '',
+    appVersion: map['appVersion'] is String ? map['appVersion'] as String : '',
       bootstrap: <String>[
         if (map['bootstrap'] case final List list)
           for (final value in list)

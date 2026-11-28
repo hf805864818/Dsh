@@ -317,6 +317,13 @@ private enum PrivilegeProbe {
   }
 
   /// First `dpkg --version` line among the paths that exist, or empty.
+  /// `1.4.0b7` — the short version plus the build number the CI bumped.
+  static func appVersionText() -> String {
+    let info = Bundle.main.infoDictionary
+    let short = info?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+    let build = info?["CFBundleVersion"] as? String ?? "0"
+    return short.contains("b") ? "\(short)" : "\(short)b\(build)"
+  }
   /// True when both halves of the host tool wiring are on disk: the plugin under
   /// the installed runtime tree, and its entry in the patch file node_runner reads.
   ///
@@ -379,6 +386,9 @@ private enum PrivilegeProbe {
       // lives in the App Support runtime tree, and the entry lives in
       // ios-host.patch.json; a missing entry is why the model answered "no such
       // tool" when the IPA still contained the plugin.
+      // Base version from pubspec (upstream's), then "b" and the build number, so
+      // two installs of the same base are never mistaken for one another.
+      "appVersion": Self.appVersionText(),
       "hostTools": hostToolsInjected(),
       "hostToolsDetail": hostToolsState().detail,
       "dpkgVersion": firstDpkgVersion(bootstrap),
