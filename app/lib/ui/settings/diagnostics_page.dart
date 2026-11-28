@@ -286,7 +286,7 @@ class _PrivilegeSectionState extends ConsumerState<_PrivilegeSection> {
             label: '宿主工具（host_*）',
             value: probe.hostTools
                 ? '已注入（host_list / host_read / host_write / host_stat / host_exec）'
-                : '未注入 — 引擎没收到 hostfs 插件，AI 会答"没有这个工具"',
+                : '未注入 — ${probe.hostToolsDetail.isEmpty ? '引擎没收到 hostfs 插件' : probe.hostToolsDetail}',
           ),
         if (status case final probe? when probe.layout.isNotEmpty)
           InfoRow(label: '越狱布局', value: probe.layout),

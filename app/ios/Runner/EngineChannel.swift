@@ -317,18 +317,31 @@ private enum PrivilegeProbe {
   }
 
   /// First `dpkg --version` line among the paths that exist, or empty.
-  /// True when both halves of the host tool wiring are on disk: the plugin in the
-  /// App Support runtime tree, and its entry in the patch file node_runner reads.
+  /// True when both halves of the host tool wiring are on disk: the plugin under
+  /// the installed runtime tree, and its entry in the patch file node_runner reads.
+  ///
+  /// The paths matter. `RuntimeInstaller.root` is `<AppSupport>/dsh-runtime/tree`,
+  /// and the patch sits in the guest home (`<AppSupport>/runtime/rootfs/root/.dsh`).
+  /// An earlier version of this check looked in `<AppSupport>` itself and reported
+  /// "未注入" for a build that was wired correctly.
   static func hostToolsInjected() -> Bool {
-    let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-    guard let root else { return false }
-    let plugin = root.appendingPathComponent("runtime/ios/hostfs/plugin.mjs")
-    guard FileManager.default.fileExists(atPath: plugin.path) else { return false }
-    let patch = root.appendingPathComponent("ios-host.patch.json")
-    guard let data = try? Data(contentsOf: patch), let text = String(data: data, encoding: .utf8) else {
-      return false
+    hostToolsState().injected
+  }
+
+  /// The same answer, plus what was actually found, so the Diagnostics row can say
+  /// which half is missing instead of only "no".
+  static func hostToolsState() -> (injected: Bool, plugin: Bool, patch: Bool, detail: String) {
+    let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+      ?? URL(fileURLWithPath: NSTemporaryDirectory())
+    let plugin = base.appendingPathComponent("dsh-runtime/tree/runtime/ios/hostfs/plugin.mjs")
+    let patch = base.appendingPathComponent("runtime/rootfs/root/.dsh/ios-host.patch.json")
+    let pluginThere = FileManager.default.fileExists(atPath: plugin.path)
+    var entryThere = false
+    if let data = try? Data(contentsOf: patch), let text = String(data: data, encoding: .utf8) {
+      entryThere = text.contains("dsh-go-ios-hostfs")
     }
-    return text.contains("dsh-go-ios-hostfs")
+    let detail = "plugin=\(pluginThere ? "有" : "无") patch条目=\(entryThere ? "有" : "无")"
+    return (pluginThere && entryThere, pluginThere, entryThere, detail)
   }
   private static func firstDpkgVersion(_ paths: [String]) -> String {
     for path in paths where path.hasSuffix("/dpkg") {
@@ -367,6 +380,7 @@ private enum PrivilegeProbe {
       // ios-host.patch.json; a missing entry is why the model answered "no such
       // tool" when the IPA still contained the plugin.
       "hostTools": hostToolsInjected(),
+      "hostToolsDetail": hostToolsState().detail,
       "dpkgVersion": firstDpkgVersion(bootstrap),
       "detail": sandboxed
         ? "受限：签名未包含 no-sandbox，无法读取容器外目录"
