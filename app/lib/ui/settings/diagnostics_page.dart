@@ -278,14 +278,15 @@ class _PrivilegeSectionState extends ConsumerState<_PrivilegeSection> {
             value: probe.denied.entries.map((entry) => '${entry.key}  errno ${entry.value}').join('\n'),
             mono: true,
           ),
+        // The mount is gone for good: it hung the guest start on device, so the
+        // host is reached through the native host_* tools instead. What matters
+        // now is whether the engine was actually told to load them.
         if (status case final probe?)
           InfoRow(
-            label: '宿主挂载',
-            value: !probe.hostMountKnown
-                ? '无法查询（引擎未导出挂载查询，应用与引擎版本不匹配）'
-                : probe.hostMounted
-                ? '已挂载 /host（可读写）'
-                : '未挂载 — 选「完全权限」或点下方启用',
+            label: '宿主工具（host_*）',
+            value: probe.hostTools
+                ? '已注入（host_list / host_read / host_write / host_stat / host_exec）'
+                : '未注入 — 引擎没收到 hostfs 插件，AI 会答"没有这个工具"',
           ),
         if (status case final probe? when probe.layout.isNotEmpty)
           InfoRow(label: '越狱布局', value: probe.layout),

@@ -317,6 +317,19 @@ private enum PrivilegeProbe {
   }
 
   /// First `dpkg --version` line among the paths that exist, or empty.
+  /// True when both halves of the host tool wiring are on disk: the plugin in the
+  /// App Support runtime tree, and its entry in the patch file node_runner reads.
+  static func hostToolsInjected() -> Bool {
+    let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+    guard let root else { return false }
+    let plugin = root.appendingPathComponent("runtime/ios/hostfs/plugin.mjs")
+    guard FileManager.default.fileExists(atPath: plugin.path) else { return false }
+    let patch = root.appendingPathComponent("ios-host.patch.json")
+    guard let data = try? Data(contentsOf: patch), let text = String(data: data, encoding: .utf8) else {
+      return false
+    }
+    return text.contains("dsh-go-ios-hostfs")
+  }
   private static func firstDpkgVersion(_ paths: [String]) -> String {
     for path in paths where path.hasSuffix("/dpkg") {
       if let version = dpkgVersion(path) { return version }
@@ -349,6 +362,11 @@ private enum PrivilegeProbe {
       "layout": layout(roots: found.roots, bootstrap: bootstrap),
       "hostMounted": PrivilegeBridge.isMounted(),
       "hostMount": PrivilegeBridge.mountedState(),
+      // Whether the engine was actually told to load the host_* tools. The plugin
+      // lives in the App Support runtime tree, and the entry lives in
+      // ios-host.patch.json; a missing entry is why the model answered "no such
+      // tool" when the IPA still contained the plugin.
+      "hostTools": hostToolsInjected(),
       "dpkgVersion": firstDpkgVersion(bootstrap),
       "detail": sandboxed
         ? "受限：签名未包含 no-sandbox，无法读取容器外目录"
@@ -1777,30 +1795,44 @@ final class EngineChannel: NSObject, FlutterStreamHandler {
   /// The phone tools' backend for this run, on the main thread where it does its work. A
   /// failure leaves the engine without phone tools rather than without an engine.
   private func preparePhone() throws {
-    var entries: [[String: Any]] = []
+    // Two independent things land in `ios-host.patch.json`: the phone tools (which
+    // need the native library and a prepared bridge) and the host filesystem tools
+    // (which only need their plugin file, because they call a linked binding).
+    // They used to share one `if`, so a phone prepare that failed silently took the
+    // host tools with it — which is exactly what happened on device: the model saw
+    // no `host_list` at all.
+    var insert: [[String: Any]] = []
+
+    let runtime = installer.root.appendingPathComponent("runtime/ios", isDirectory: true)
+    try? FileManager.default.createDirectory(at: runtime, withIntermediateDirectories: true)
+
+    // Host filesystem tools: always copied when the bundle has them.
+    let hostFsTarget = runtime.appendingPathComponent("hostfs", isDirectory: true)
+    if let hostFs = Bundle.main.url(forResource: "hostfs", withExtension: nil, subdirectory: "dsh-runtime") {
+      try? FileManager.default.removeItem(at: hostFsTarget)
+      if (try? FileManager.default.copyItem(at: hostFs, to: hostFsTarget)) != nil {
+        insert.append([
+          "id": "dsh-go-ios-hostfs",
+          "name": hostFsTarget.appendingPathComponent("plugin.mjs").path,
+          "config": ["allowWrite": true, "allowExec": true],
+        ])
+      }
+    }
+
     if let library = native?.library, let source = Bundle.main.url(forResource: "phone", withExtension: nil, subdirectory: "dsh-runtime") {
-      let target = installer.root.appendingPathComponent("runtime/ios/phone", isDirectory: true)
+      let target = runtime.appendingPathComponent("phone", isDirectory: true)
       try? FileManager.default.removeItem(at: target)
-      try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
       try FileManager.default.copyItem(at: source, to: target)
       // Beside it, where the plugin looks. A build without the browser tools simply has none.
-      let browserTarget = installer.root.appendingPathComponent("runtime/ios/browser", isDirectory: true)
+      let browserTarget = runtime.appendingPathComponent("browser", isDirectory: true)
       try? FileManager.default.removeItem(at: browserTarget)
       if let browser = Bundle.main.url(forResource: "browser", withExtension: nil, subdirectory: "dsh-runtime") {
         try FileManager.default.copyItem(at: browser, to: browserTarget)
       }
-      let systemTarget = installer.root.appendingPathComponent("runtime/ios/system", isDirectory: true)
+      let systemTarget = runtime.appendingPathComponent("system", isDirectory: true)
       try? FileManager.default.removeItem(at: systemTarget)
       if let system = Bundle.main.url(forResource: "system", withExtension: nil, subdirectory: "dsh-runtime") {
         try FileManager.default.copyItem(at: system, to: systemTarget)
-      }
-      // Host filesystem tools. The guest cannot reach the host (mounting it froze
-      // the start on device), so these call the linked native binding instead.
-      // A build without the folder simply has no host tools.
-      let hostFsTarget = installer.root.appendingPathComponent("runtime/ios/hostfs", isDirectory: true)
-      try? FileManager.default.removeItem(at: hostFsTarget)
-      if let hostFs = Bundle.main.url(forResource: "hostfs", withExtension: nil, subdirectory: "dsh-runtime") {
-        try FileManager.default.copyItem(at: hostFs, to: hostFsTarget)
       }
       let cache = self.cache
       let prepared: (directory: URL, runId: String)? = DispatchQueue.main.sync {
@@ -1815,27 +1847,19 @@ final class EngineChannel: NSObject, FlutterStreamHandler {
         }
       }
       if let prepared {
-        var insert: [[String: Any]] = [[
+        insert.append([
           "id": "dsh-go-ios-phone",
           "name": target.appendingPathComponent("plugin.mjs").path,
           "config": ["directory": prepared.directory.path, "runId": prepared.runId],
-        ]]
-        let hostFsPlugin = installer.root.appendingPathComponent("runtime/ios/hostfs/plugin.mjs")
-        if FileManager.default.fileExists(atPath: hostFsPlugin.path) {
-          insert.append([
-            "id": "dsh-go-ios-hostfs",
-            "name": hostFsPlugin.path,
-            "config": ["allowWrite": true, "allowExec": true],
-          ])
-        }
-        entries = [["insert": insert]]
+        ])
       }
     }
-    // node_runner.cc passes this file on every run: an empty one means no phone tools.
+
+    let entries: [[String: Any]] = insert.isEmpty ? [] : [["insert": insert]]
+    // node_runner.cc passes this file on every run: an empty one means no extra tools.
     let patch = try JSONSerialization.data(withJSONObject: entries, options: .withoutEscapingSlashes)
     try patch.write(to: dshHome.appendingPathComponent("ios-host.patch.json"), options: .atomic)
   }
-
   private func startPhone() {
     DispatchQueue.main.async { [self] in
       MainActor.assumeIsolated {

@@ -57,33 +57,48 @@ export async function apply(ctx, config) {
   }
   const catalog = JSON.parse(bytes);
 
-  let native;
+  // The binding is registered by node_runner before Node starts. When it is
+  // missing (an older engine, or a build that did not link it), the tools are
+  // still registered and answer with a plain error: a model that cannot see
+  // `host_list` at all cannot tell "no such tool" from "the tool said no", and
+  // that difference is the whole diagnosis.
+  let native = null;
+  let nativeProblem = null;
   try {
     native = process._linkedBinding('dsh_ios_hostfs');
-  } catch {
-    // A build without the binding simply has no host tools; the rest of the App
-    // keeps working, and nothing pretends to be available.
-    return;
+  } catch (error) {
+    nativeProblem = String(error?.message ?? error);
   }
 
   const allowWrite = config?.allowWrite !== false;
   const allowExec = config?.allowExec !== false;
 
+  /** Every host_* call goes through here so a missing binding reads as one message. */
+  const call = (name, run) => {
+    if (!native) return refusal(name, `宿主原生绑定不可用（${nativeProblem ?? '未链接'}）。这个构建没有把 host_fs_binding 编进引擎。`);
+    try {
+      return run();
+    } catch (error) {
+      return refusal(name, String(error?.message ?? error));
+    }
+  };
   const handlers = {
-    host_list: (args) => answer(native.list(args.path)),
-    host_stat: (args) => answer(native.stat(args.path)),
-    host_read: (args) => answer(native.read(args.path, args.maxBytes)),
+    host_list: (args) => call('list', () => answer(native.list(args.path))),
+    host_stat: (args) => call('stat', () => answer(native.stat(args.path))),
+    host_read: (args) => call('read', () => answer(native.read(args.path, args.maxBytes))),
     host_write: (args) => {
       if (!allowWrite) return refusal('write', 'writing is disabled in this build');
-      return answer(native.write(args.path, args.data));
+      return call('write', () => answer(native.write(args.path, args.data)));
     },
     host_exec: (args) => {
       if (!allowExec) return refusal('exec', 'running host programs is disabled in this build');
       const problem = checkExec(args.path, args.argv);
       if (problem) return refusal('exec', problem);
-      const result = native.exec(args.path, args.argv, { cwd: args.cwd, timeoutMs: args.timeoutMs });
-      // Untrusted: what a program prints is data, not an instruction.
-      return answer({ ...result, trust: 'untrusted-host-output' });
+      return call('exec', () => {
+        const result = native.exec(args.path, args.argv, { cwd: args.cwd, timeoutMs: args.timeoutMs });
+        // Untrusted: what a program prints is data, not an instruction.
+        return answer({ ...result, trust: 'untrusted-host-output' });
+      });
     },
   };
 

@@ -20,6 +20,7 @@ class PrivilegeStatus {
     this.layout = '',
     this.hostMounted = false,
     this.hostMountKnown = true,
+    this.hostTools = false,
   });
 
   /// True when no candidate path outside the container could be read.
@@ -56,6 +57,11 @@ class PrivilegeStatus {
   /// different fact from "asked and not mounted", and the row says so.
   final bool hostMountKnown;
 
+  /// Whether the engine was told to load the host_* tools (plugin on disk and
+  /// its entry in ios-host.patch.json). Distinct from the mount: it is the only
+  /// host access path this build has.
+  final bool hostTools;
+
   static const PrivilegeStatus unknown = PrivilegeStatus(
     sandboxed: true,
     readable: <String>[],
@@ -85,6 +91,7 @@ class PrivilegeStatus {
       layout: map['layout'] is String ? map['layout'] as String : '',
       hostMounted: map['hostMounted'] == true,
       hostMountKnown: map['hostMount'] is String && map['hostMount'] != 'unknown',
+    hostTools: map['hostTools'] == true,
       bootstrap: <String>[
         if (map['bootstrap'] case final List list)
           for (final value in list)
